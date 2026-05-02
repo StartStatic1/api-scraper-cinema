@@ -1,42 +1,53 @@
 import os
 import requests
+import re
 from bs4 import BeautifulSoup
 from flask import Flask, request, redirect, jsonify
 
 app = Flask(__name__)
 
 # =====================================================================
-# 🕷️ MOTOR DE SCRAPING (RASPADOR DE SITES)
+# 🕷️ MOTOR DE SCRAPING - ALVO: REDE CANAIS / MULTI-SERVER
 # =====================================================================
 
-def raspar_servidor_premium(titulo):
+def capturar_mp4_premium(titulo):
     """
-    Aqui é onde a mágica vai acontecer!
-    O robô vai entrar no site alvo, pesquisar o filme e roubar o MP4.
+    Tenta localizar o filme em servidores de alta qualidade 
+    e extrair o link direto do player.
     """
-    titulo_formatado = titulo.replace(" ", "+") # Ex: O+Mentiroso
-    
-    # ---------------------------------------------------------
-    # EXEMPLO DA LÓGICA (Vamos adaptar pro site que você escolher)
-    # ---------------------------------------------------------
-    # 1. O robô faz a pesquisa no site alvo:
-    # url_pesquisa = f"https://sitedefilme.com/busca?q={titulo_formatado}"
-    # resposta = requests.get(url_pesquisa)
-    
-    # 2. O BeautifulSoup lê o código do site e acha o filme:
-    # site = BeautifulSoup(resposta.text, 'html.parser')
-    # link_da_pagina = site.find('a', class_='filme-link')['href']
-    
-    # 3. O robô entra na página do filme e rouba o MP4:
-    # pagina_filme = requests.get(link_da_pagina)
-    # html_filme = BeautifulSoup(pagina_filme.text, 'html.parser')
-    # link_mp4_puro = html_filme.find('video').find('source')['src']
-    #
-    # return link_mp4_puro
-    # ---------------------------------------------------------
+    try:
+        # 1. Formatamos o título para a busca (Ex: O Mentiroso -> o-mentiroso)
+        termo_busca = titulo.lower().replace(" ", "-").replace("!", "").replace(",", "")
+        
+        # Alvos de busca (sites que o seu bot vai "raspar")
+        # Tentamos uma rota de API de embeds que costuma alimentar o Rede Canais
+        url_alvo = f"https://embed.warezcdn.com/film/{termo_busca}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://redecanais.zip/'
+        }
 
-    # Por enquanto, como estamos montando do zero, ele retorna None
-    # até você me dizer qual o PRIMEIRO site que vamos invadir!
+        # Fazemos o pedido ao servidor
+        resposta = requests.get(url_alvo, headers=headers, timeout=10)
+        
+        if resposta.status_code == 200:
+            # Procuramos por links que terminam em .mp4 ou códigos de servidores como 'master99999'
+            conteudo = resposta.text
+            
+            # MÁGICA: Procura padrões de URL de vídeo no código fonte
+            links_encontrados = re.findall(r'(https?://[^\s"\']+\.(?:mp4|mkv|m3u8))', conteudo)
+            
+            if links_encontrados:
+                # Prioriza links que contenham 'master' ou 'serv' (os que você gosta)
+                for link in links_encontrados:
+                    if "master" in link or "serv" in link or "209.131" in link:
+                        return link
+                return links_encontrados[0] # Se não achar o VIP, manda o primeiro que achar
+
+    except Exception as e:
+        print(f"Erro na raspagem: {e}")
+    
     return None
 
 # =====================================================================
@@ -46,24 +57,29 @@ def raspar_servidor_premium(titulo):
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
-    
     if not titulo:
-        return "Mestre, você esqueceu de mandar o título!", 400
+        return "Mestre, mande o título!", 400
 
-    print(f"🕵️ Iniciando raspagem para: {titulo}")
+    print(f"🕵️ Robô em ação para: {titulo}")
     
-    # Aciona o robô raspador
-    link_mp4 = raspar_servidor_premium(titulo)
+    link_final = capturar_mp4_premium(titulo)
     
-    if link_mp4:
-        # Se o robô achou o MP4, redireciona seu app (VLC/MX) direto pra ele!
-        return redirect(link_mp4)
+    if link_final:
+        # Sucesso! O VLC ou MX Player vai abrir o link direto aqui
+        return redirect(link_final)
     else:
-        return jsonify({"erro": "Filme não encontrado no servidor de raspagem."}), 404
+        # Se falhar a raspagem, podemos tentar um redirecionamento de busca manual como fallback
+        return jsonify({
+            "status": "erro",
+            "mensagem": "O robô não conseguiu furar o bloqueio deste filme ainda.",
+            "dica": "Verifique se o nome está correto no TMDB."
+        }), 404
 
 @app.route("/")
 def index():
-    return "🚀 Cine Mega Scraper API (V1.0 - Clean Base) Online e Operante!", 200
+    return "🚀 Cine Mega Scraper VIP V1.0 Online!", 200
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    # Porta padrão para o Koyeb/Render
+    port = int(os.environ.get("PORT", 8000))
+    app.run(host="0.0.0.0", port=port)
