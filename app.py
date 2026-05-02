@@ -6,7 +6,7 @@ from flask import Flask, request, redirect, jsonify
 
 app = Flask(__name__)
 
-# Suas listas originais (A Mina de Ouro)
+# Suas listas M3U originais
 LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_backup/lista.m3u",
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP2/lista2.m3u"
@@ -15,7 +15,7 @@ LISTAS_M3U = [
 catalogo_filmes = {}
 
 def limpar_texto(texto):
-    """Limpa o nome arrancando anos, tags HD e caracteres especiais"""
+    """Limpa o nome arrancando anos, tags HD e sujeiras de texto"""
     t = re.sub(r'\[.*?\]|\(.*?\)', '', str(texto))
     t = re.sub(r'(?i)(1080p|720p|4k|fhd|hd|dual|dublado|legendado)', '', t)
     t = re.sub(r'[^a-zA-Z0-9\s]', '', t)
@@ -24,7 +24,7 @@ def limpar_texto(texto):
 def carregar_m3u():
     global catalogo_filmes
     catalogo_filmes = {}
-    print("🚀 Iniciando Motor VIP Sniper no Render...")
+    print("🚀 Carregando Motor Sniper de Elite...")
     
     for url in LISTAS_M3U:
         try:
@@ -45,57 +45,60 @@ def carregar_m3u():
         except Exception as e:
             print(f"Erro ao carregar lista: {e}")
             
-    print(f"✅ Catálogo pronto! {len(catalogo_filmes)} títulos na memória.")
+    print(f"✅ Catálogo pronto! {len(catalogo_filmes)} títulos isolados.")
 
 carregar_m3u()
 
-def buscar_sniper_vip(titulo):
-    titulo_busca = limpar_texto(titulo)
-    links_encontrados = []
-    
-    # 1. ARRASTÃO: Pega tudo que tiver relação com o nome
-    for nome_cat, links in catalogo_filmes.items():
-        if titulo_busca == nome_cat or titulo_busca in nome_cat or nome_cat in titulo_busca:
-            if len(titulo_busca) > 2:
-                links_encontrados.extend(links)
-
-    # 2. PLANO DE RESGATE (Para filmes como Se Beber Não Case)
-    if not links_encontrados:
-        for nome_cat, links in catalogo_filmes.items():
-            if difflib.SequenceMatcher(None, titulo_busca, nome_cat).ratio() > 0.75:
-                links_encontrados.extend(links)
-
-    if not links_encontrados:
-        return None
-
-    # 3. A PENEIRA DE OURO (Prioridade VIP)
+def extrair_melhor_link(links):
+    """Função separada só para escolher o melhor link de uma lista isolada"""
     link_vip = None
     link_secundario = None
     link_lixo = None
 
-    for link in links_encontrados:
-        # OS REIS DO CAMAROTE (Toca liso)
-        if "209.131.122.80" in link or "serv99" in link or "master99999" in link:
+    for link in links:
+        # A REDE VIP
+        if "209.131.122." in link or "serv99" in link or "master99999" in link:
             link_vip = link
             break 
-        # O ESGOTO (fontedecanais)
         elif "fontedecanais" in link:
             link_lixo = link
-        # O RESTO DA LISTA
         else:
             link_secundario = link
 
-    if link_vip:
-        return link_vip
-    if link_secundario:
-        return link_secundario
+    if link_vip: return link_vip
+    if link_secundario: return link_secundario
     return link_lixo
+
+
+def buscar_sniper_vip(titulo):
+    titulo_busca = limpar_texto(titulo)
+    
+    # 1. TIRO DE SNIPER (Nome Exato) - Isso salva o American Pie!
+    if titulo_busca in catalogo_filmes:
+        links_do_filme = catalogo_filmes[titulo_busca]
+        return extrair_melhor_link(links_do_filme)
+
+    # 2. MATEMÁTICA ALTA (Apenas se o nome exato falhar)
+    melhores_matches = []
+    for nome_cat, links in catalogo_filmes.items():
+        score = difflib.SequenceMatcher(None, titulo_busca, nome_cat).ratio()
+        # Exigimos 85% de semelhança para não confundir filme 1 com filme 2
+        if score > 0.85:
+            melhores_matches.append((score, links))
+
+    if melhores_matches:
+        # Pega a lista de links do filme com a MAIOR semelhança matemática
+        melhores_matches.sort(key=lambda x: x[0], reverse=True)
+        links_do_filme_parecido = melhores_matches[0][1]
+        return extrair_melhor_link(links_do_filme_parecido)
+
+    return None
 
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
     if not titulo:
-        return "Título vazio", 400
+        return "Título não enviado", 400
         
     link = buscar_sniper_vip(titulo)
     
@@ -104,12 +107,12 @@ def buscar():
     else:
         return jsonify({
             "status": "erro",
-            "mensagem": "Filme não encontrado no acervo Cine Mega.",
+            "mensagem": "Filme não encontrado.",
         }), 404
 
 @app.route("/")
 def index():
-    return f"🚀 Motor Cine Mega VIP (Render) | Títulos Indexados: {len(catalogo_filmes)}", 200
+    return f"🚀 Motor Cine Mega Sniper | Títulos: {len(catalogo_filmes)}", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
