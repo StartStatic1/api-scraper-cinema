@@ -5,7 +5,6 @@ from flask import Flask, request, redirect, jsonify
 
 app = Flask(__name__)
 
-# Suas listas M3U de Elite
 LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_backup/lista.m3u",
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP2/lista2.m3u"
@@ -14,13 +13,8 @@ LISTAS_M3U = [
 catalogo_filmes = {}
 
 def limpar_texto(texto):
-    """Limpa o nome para busca ultra-eficiente"""
-    t = str(texto)
-    # Remove tags entre colchetes e parênteses
-    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
-    # Remove termos técnicos que poluem a busca
-    t = re.sub(r'(?i)(1080p|720p|4k|fhd|hd|dual|dublado|legendado|completo|filmes|filme|h264|x264|webdl)', '', t)
-    # Mantém apenas letras e números
+    t = re.sub(r'\[.*?\]|\(.*?\)', '', str(texto))
+    t = re.sub(r'(?i)(1080p|720p|4k|fhd|hd|dual|dublado|legendado|completo|filmes|filme)', '', t)
     t = re.sub(r'[^a-zA-Z0-9\s]', '', t)
     return " ".join(t.split()).lower().strip()
 
@@ -31,15 +25,15 @@ def carregar_m3u():
     
     for url in LISTAS_M3U:
         try:
-            # stream=True lê o arquivo aos poucos para não estourar a RAM do Koyeb
+            # Usamos stream=True para não carregar o arquivo bruto na RAM
             r = requests.get(url, stream=True, timeout=60)
             it = r.iter_lines()
             
             contador = 0
             for linha in it:
-                # LIMITE DE SEGURANÇA: 180 mil títulos para estabilizar a RAM em ~50%
-                if contador > 180000: 
-                    print("⚠️ Limite de segurança atingido. RAM protegida.")
+                # TRAVA DE SEGURANÇA: Reduzi para 160k para dar folga total na CPU/RAM
+                if contador > 160000: 
+                    print("⚠️ RAM em risco! Parando carga para manter o site vivo.")
                     break
                 
                 if not linha: continue
@@ -52,63 +46,41 @@ def carregar_m3u():
                     try:
                         link = next(it).decode('utf-8', errors='ignore').strip()
                         if link.startswith("http"):
-                            # Prioriza links de servidores conhecidos como bons
-                            if nome_limpo not in catalogo_filmes or "serv99" in link:
+                            # Só guarda se o nome for novo (economiza muita RAM)
+                            if nome_limpo not in catalogo_filmes:
                                 catalogo_filmes[nome_limpo] = link
                                 contador += 1
                     except StopIteration: break
         except Exception as e:
-            print(f"Erro ao carregar lista: {e}")
+            print(f"Erro ao carregar: {e}")
             
-    print(f"✅ Motor Pronto! {len(catalogo_filmes)} títulos indexados.")
+    print(f"✅ Catálogo pronto! {len(catalogo_filmes)} títulos na memória.")
 
-# Carga inicial do sistema
 carregar_m3u()
-
-def buscar_sniper_vip(titulo):
-    titulo_busca = limpar_texto(titulo)
-    
-    # 1. TIRO DE SNIPER (Nome Exato) - Instantâneo
-    if titulo_busca in catalogo_filmes:
-        return catalogo_filmes[titulo_busca]
-
-    # 2. BUSCA POR PALAVRA-CHAVE (Se o sniper falhar)
-    # Procura se o que você digitou está dentro de algum nome do catálogo
-    for nome_cat, link in catalogo_filmes.items():
-        if titulo_busca in nome_cat or nome_cat in titulo_busca:
-            return link
-
-    return None
 
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
-    if not titulo:
-        return "Título não enviado", 400
-        
-    link = buscar_sniper_vip(titulo)
+    if not titulo: return "Título vazio", 400
     
-    if link:
-        # Redireciona para o link direto do vídeo
-        return redirect(link)
-    else:
-        return jsonify({
-            "status": "erro",
-            "mensagem": "Filme não encontrado no Motor VIP.",
-        }), 404
+    titulo_busca = limpar_texto(titulo)
+    link = catalogo_filmes.get(titulo_busca)
+    
+    if not link:
+        # Busca rápida de contenção
+        for nome_cat in catalogo_filmes:
+            if titulo_busca in nome_cat:
+                link = catalogo_filmes[nome_cat]
+                break
+
+    if link: return redirect(link)
+    return jsonify({"status": "erro"}), 404
 
 @app.route("/")
 def index():
-    # Página de status para você conferir se o motor está vivo
-    return f"🚀 Motor Cine Mega VIP Online! | Títulos Indexados: {len(catalogo_filmes)}", 200
-
-@app.route("/refresh")
-def refresh():
-    """Rota para atualizar a lista sem precisar reiniciar o servidor"""
-    carregar_m3u()
-    return "Catálogo atualizado com sucesso!", 200
+    return f"🚀 Motor Sniper Online | {len(catalogo_filmes)} Títulos", 200
 
 if __name__ == "__main__":
-    # Detecta a porta automaticamente (Koyeb/Render)
+    # Comando para o Koyeb rodar estável
     port = int(os.environ.get("PORT", 8000))
     app.run(host="0.0.0.0", port=port)
