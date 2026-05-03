@@ -1,5 +1,3 @@
-BACKUP API SCRAPING RENDER KYOB
-
 import os
 import re
 import requests
