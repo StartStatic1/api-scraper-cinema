@@ -8,7 +8,8 @@ from flask import Flask, request, redirect, jsonify
 app = Flask(__name__)
 
 LISTAS_M3U = [
-    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP4/lista2.m3u"
+    # Mestre, deixe aqui apenas o link da M3U boa que sobrou!
+    "https://github.com/StartStatic1/meus-apks/releases/download/V_backup/lista.m3u"
 ]
 
 UPLOADER_IA = "rafaela_andrea_ferrada_flores"
@@ -73,42 +74,55 @@ def obter_link_direto_ia(identifier):
     except: pass
     return None
 
+def procurar_no_catalogo(termo):
+    if not termo or len(termo) < 2: return None
+    
+    # ========================================================
+    # 1. PRIORIDADE ABSOLUTA: O SEU ACERVO (ARCHIVE.ORG)
+    # ========================================================
+    # Checa se o nome bate exato
+    if termo in catalogo_pessoal: 
+        return obter_link_direto_ia(catalogo_pessoal[termo])
+    
+    # Checa se o nome é parecido (Ex: "brinquedo assassino" acha "brinquedo assassino 1988")
+    for nome_cat, ident in catalogo_pessoal.items():
+        if termo in nome_cat or nome_cat in termo: 
+            return obter_link_direto_ia(ident)
+            
+    # ========================================================
+    # 2. PLANO B: LISTA M3U (SÓ VEM PRA CÁ SE FALHAR LÁ EM CIMA)
+    # ========================================================
+    if termo in catalogo_filmes: 
+        return catalogo_filmes[termo]
+        
+    for nome_cat in catalogo_filmes:
+        if termo in nome_cat or nome_cat in termo: 
+            return catalogo_filmes[nome_cat]
+            
+    return None
+
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
     if not titulo: return "Título vazio", 400
     
     titulo_busca = limpar_texto(titulo)
-    link = None
-    
-    # 1. Busca no Archive.org (Prioridade Máxima)
-    if titulo_busca in catalogo_pessoal: 
-        link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
-    
-    # 2. Busca exata na M3U
-    if not link and titulo_busca in catalogo_filmes: 
-        link = catalogo_filmes[titulo_busca]
+    titulo_sem_ano = re.sub(r'\s\d{4}$', '', titulo_busca).strip()
 
-    # 3. Busca Inteligente (Entende que "American Pie O Retorno" é "American Pie 2")
-    if not link and len(titulo_busca) >= 4:
-        for nome_cat, ident in catalogo_pessoal.items():
-            if titulo_busca in nome_cat or nome_cat in titulo_busca: 
-                link = obter_link_direto_ia(ident)
-                break
-        if not link:
-            for nome_cat in catalogo_filmes:
-                if titulo_busca in nome_cat or nome_cat in titulo_busca:
-                    link = catalogo_filmes[nome_cat]
-                    break
+    link = procurar_no_catalogo(titulo_busca)
+    
+    if not link and titulo_sem_ano != titulo_busca:
+        link = procurar_no_catalogo(titulo_sem_ano)
 
-    if link: return redirect(link)
-    # Mostra exatamente o que o motor procurou para você diagnosticar se falhar
+    if link: 
+        return redirect(link)
+    
     return jsonify({"status": "erro", "procurado": titulo_busca}), 404
 
 @app.route("/atualizar")
 def atualizar():
     carregar_acervo_pessoal()
-    return jsonify({"status": "sucesso", "mensagem": "Acervo atualizado!"}), 200
+    return jsonify({"status": "sucesso"}), 200
 
 @app.route("/")
 def index():
