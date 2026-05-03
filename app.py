@@ -7,7 +7,7 @@ app = Flask(__name__)
 
 LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_backup/lista.m3u",
-    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP2/lista2.m3u"
+    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP3/lista2.m3u"
 ]
 
 catalogo_filmes = {}
