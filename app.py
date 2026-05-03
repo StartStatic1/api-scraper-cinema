@@ -6,7 +6,7 @@ from flask import Flask, request, redirect, jsonify
 app = Flask(__name__)
 
 LISTAS_M3U = [
-    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP4/lista2.m3u"
+    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP4/lista2.m3u",
 ]
 
 catalogo_filmes = {}
