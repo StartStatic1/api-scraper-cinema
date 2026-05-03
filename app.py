@@ -1,6 +1,7 @@
 import os
 import re
 import requests
+import unicodedata
 from flask import Flask, request, redirect, jsonify
 
 app = Flask(__name__)
@@ -12,12 +13,18 @@ LISTAS_M3U = [
 
 UPLOADER_IA = "rafaela_andrea_ferrada_flores"
 
-catalogo_pessoal = {} # Guarda os seus filmes do Archive.org
-catalogo_filmes = {}  # Guarda os filmes das listas M3U
+catalogo_pessoal = {} 
+catalogo_filmes = {}  
 
 def limpar_texto(texto):
-    t = re.sub(r'\[.*?\]|\(.*?\)', '', str(texto))
+    """Remove acentos, tags e limpa o nome para não ter erro na busca"""
+    # 1. Normaliza acentos: "Não" vira "Nao", "Herói" vira "Heroi"
+    t = unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8')
+    # 2. Tira tags e anos entre parênteses/colchetes
+    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
+    # 3. Tira palavras inúteis de qualidade
     t = re.sub(r'(?i)(1080p|720p|4k|fhd|hd|dual|dublado|legendado|completo|filmes|filme)', '', t)
+    # 4. Deixa só letras e números
     t = re.sub(r'[^a-zA-Z0-9\s]', '', t)
     return " ".join(t.split()).lower().strip()
 
@@ -26,14 +33,12 @@ def carregar_acervo_pessoal():
     catalogo_pessoal = {}
     print("🗄️ Carregando Acervo Pessoal do Archive.org...")
     try:
-        # Usa a API oficial do Archive.org para buscar apenas os seus uploads
         url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_IA})&fl[]=identifier,title&output=json&rows=1000"
         r = requests.get(url_ia, timeout=15).json()
         
-        docs = r.get('response', {}).get('docs', [])
-        for doc in docs:
+        for doc in r.get('response', {}).get('docs', []):
             id_ia = doc.get('identifier')
-            titulo = doc.get('title', id_ia) # Se não tiver título claro, usa o ID
+            titulo = doc.get('title', id_ia)
             nome_limpo = limpar_texto(titulo)
             catalogo_pessoal[nome_limpo] = id_ia
             
@@ -54,7 +59,7 @@ def carregar_m3u():
             contador = 0
             for linha in it:
                 if contador > 160000: 
-                    print("⚠️ RAM em risco! Parando carga M3U.")
+                    print("⚠️ RAM protegida! Parando carga M3U aos 160k.")
                     break
                 
                 if not linha: continue
@@ -76,21 +81,32 @@ def carregar_m3u():
             
     print(f"✅ Catálogo M3U pronto! {len(catalogo_filmes)} títulos na memória.")
 
-# Carrega as duas bases de dados ao iniciar
+# Executa ao ligar o servidor
 carregar_acervo_pessoal()
 carregar_m3u()
 
 def obter_link_direto_ia(identifier):
-    """Acha o arquivo de vídeo (.mp4 ou .mkv) dentro do seu upload no Archive.org"""
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
         for arquivo in r.get("files", []):
             nome_arq = arquivo.get("name", "")
-            # Procura a extensão de vídeo
             if nome_arq.lower().endswith(('.mp4', '.mkv', '.avi', '.ts')):
-                # Monta o link direto de download/streaming
                 return f"https://archive.org/download/{identifier}/{nome_arq}"
     except: pass
+    return None
+
+def procurar_no_catalogo(termo):
+    """Busca o termo exato ou aproximado nas duas bases"""
+    # 1. Tenta no Archive.org primeiro
+    if termo in catalogo_pessoal: return obter_link_direto_ia(catalogo_pessoal[termo])
+    for nome_cat, ident in catalogo_pessoal.items():
+        if termo in nome_cat or nome_cat in termo: return obter_link_direto_ia(ident)
+        
+    # 2. Tenta na M3U se não achou no Archive
+    if termo in catalogo_filmes: return catalogo_filmes[termo]
+    for nome_cat in catalogo_filmes:
+        if termo in nome_cat or nome_cat in termo: return catalogo_filmes[nome_cat]
+        
     return None
 
 @app.route("/buscar")
@@ -98,37 +114,23 @@ def buscar():
     titulo = request.args.get("titulo", "")
     if not titulo: return "Título vazio", 400
     
+    # Ex: "Se Beber Nao Case 2009"
     titulo_busca = limpar_texto(titulo)
-    link = None
+    # Ex: "Se Beber Nao Case" (Arranca os últimos 4 números se houver espaço antes)
+    titulo_sem_ano = re.sub(r'\s\d{4}$', '', titulo_busca).strip()
 
-    # 1️⃣ PRIORIDADE MÁXIMA: O SEU ACERVO NO ARCHIVE.ORG
-    id_ia = None
-    if titulo_busca in catalogo_pessoal:
-        id_ia = catalogo_pessoal[titulo_busca]
-    else:
-        # Busca por aproximação
-        for nome_cat, ident in catalogo_pessoal.items():
-            if titulo_busca in nome_cat or nome_cat in titulo_busca:
-                id_ia = ident
-                break
+    # Tentativa 1: Busca com o ano junto
+    link = procurar_no_catalogo(titulo_busca)
     
-    if id_ia:
-        print(f"🎯 Puxando filme do Acervo Pessoal: {id_ia}")
-        link = obter_link_direto_ia(id_ia)
-
-    # 2️⃣ PLANO B: BUSCA NAS LISTAS M3U
-    if not link:
-        link = catalogo_filmes.get(titulo_busca)
-        if not link:
-            for nome_cat in catalogo_filmes:
-                if titulo_busca in nome_cat:
-                    link = catalogo_filmes[nome_cat]
-                    break
+    # Tentativa 2: Se falhou, busca ignorando o ano
+    if not link and titulo_sem_ano != titulo_busca:
+        link = procurar_no_catalogo(titulo_sem_ano)
 
     if link: 
         return redirect(link)
     
-    return jsonify({"status": "erro"}), 404
+    # Se der erro agora, ele vai te mostrar na tela preta EXATAMENTE o que ele procurou
+    return jsonify({"status": "erro", "procurado": titulo_busca}), 404
 
 @app.route("/")
 def index():
