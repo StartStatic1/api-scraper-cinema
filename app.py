@@ -9,7 +9,7 @@ app = Flask(__name__)
 
 # MESTRE: Deixei apenas a lista que você confirmou que está funcional
 LISTAS_M3U = [
-    "https://github.com/StartStatic1/meus-apks/releases/download/V_backup/lista.m3u"
+    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP4/lista2.m3u"
 ]
 
 UPLOADER_IA = "rafaela_andrea_ferrada_flores"
