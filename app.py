@@ -3,12 +3,12 @@ import re
 import requests
 import urllib.parse
 import unicodedata
-from flask import Flask, request, redirect, jsonify
+from flask import Flask, request, redirect, jsonify, make_response
 
 app = Flask(__name__)
 
+# MESTRE: Deixei apenas a lista que você confirmou que está funcional
 LISTAS_M3U = [
-    # Mestre, deixe aqui apenas o link da M3U boa que sobrou!
     "https://github.com/StartStatic1/meus-apks/releases/download/V_backup/lista.m3u"
 ]
 
@@ -27,7 +27,6 @@ def limpar_texto(texto):
 def carregar_acervo_pessoal():
     global catalogo_pessoal
     catalogo_pessoal = {}
-    print("🗄️ Carregando Archive.org...")
     try:
         url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_IA})&fl[]=identifier,title&output=json&rows=1000"
         r = requests.get(url_ia, timeout=15).json()
@@ -40,7 +39,6 @@ def carregar_acervo_pessoal():
 def carregar_m3u():
     global catalogo_filmes
     catalogo_filmes = {}
-    print("🚀 Carregando M3U...")
     for url in LISTAS_M3U:
         try:
             r = requests.get(url, stream=True, timeout=60)
@@ -60,6 +58,7 @@ def carregar_m3u():
                     except StopIteration: break
         except: pass
 
+# Carga inicial
 carregar_acervo_pessoal()
 carregar_m3u()
 
@@ -74,33 +73,6 @@ def obter_link_direto_ia(identifier):
     except: pass
     return None
 
-def procurar_no_catalogo(termo):
-    if not termo or len(termo) < 2: return None
-    
-    # ========================================================
-    # 1. PRIORIDADE ABSOLUTA: O SEU ACERVO (ARCHIVE.ORG)
-    # ========================================================
-    # Checa se o nome bate exato
-    if termo in catalogo_pessoal: 
-        return obter_link_direto_ia(catalogo_pessoal[termo])
-    
-    # Checa se o nome é parecido (Ex: "brinquedo assassino" acha "brinquedo assassino 1988")
-    for nome_cat, ident in catalogo_pessoal.items():
-        if termo in nome_cat or nome_cat in termo: 
-            return obter_link_direto_ia(ident)
-            
-    # ========================================================
-    # 2. PLANO B: LISTA M3U (SÓ VEM PRA CÁ SE FALHAR LÁ EM CIMA)
-    # ========================================================
-    if termo in catalogo_filmes: 
-        return catalogo_filmes[termo]
-        
-    for nome_cat in catalogo_filmes:
-        if termo in nome_cat or nome_cat in termo: 
-            return catalogo_filmes[nome_cat]
-            
-    return None
-
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
@@ -108,21 +80,43 @@ def buscar():
     
     titulo_busca = limpar_texto(titulo)
     titulo_sem_ano = re.sub(r'\s\d{4}$', '', titulo_busca).strip()
-
-    link = procurar_no_catalogo(titulo_busca)
+    link = None
     
-    if not link and titulo_sem_ano != titulo_busca:
-        link = procurar_no_catalogo(titulo_sem_ano)
-
-    if link: 
-        return redirect(link)
+    # 1. PRIORIDADE MÁXIMA: ARCHIVE.ORG (Busca Exata e Aproximada)
+    if titulo_busca in catalogo_pessoal:
+        link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
     
+    if not link:
+        for nome_cat, ident in catalogo_pessoal.items():
+            if titulo_busca in nome_cat or nome_cat in titulo_busca:
+                link = obter_link_direto_ia(ident)
+                break
+    
+    # 2. PLANO B: SÓ OLHA A M3U SE NÃO ACHOU NO SEU ACERVO
+    if not link:
+        if titulo_busca in catalogo_filmes:
+            link = catalogo_filmes[titulo_busca]
+        else:
+            # Busca aproximada na M3U (Apenas para nomes longos para evitar erro)
+            if len(titulo_busca) > 4:
+                for nome_cat in catalogo_filmes:
+                    if titulo_busca in nome_cat or nome_cat in titulo_busca:
+                        link = catalogo_filmes[nome_cat]
+                        break
+
+    if link:
+        # Ajuste para o botão vermelho: Força o navegador a aceitar o redirecionamento
+        response = make_response(redirect(link))
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+        
     return jsonify({"status": "erro", "procurado": titulo_busca}), 404
 
 @app.route("/atualizar")
 def atualizar():
     carregar_acervo_pessoal()
-    return jsonify({"status": "sucesso"}), 200
+    carregar_m3u() # Agora atualiza os dois para garantir
+    return jsonify({"status": "sucesso", "ia": len(catalogo_pessoal), "m3u": len(catalogo_filmes)}), 200
 
 @app.route("/")
 def index():
