@@ -3,15 +3,14 @@ import re
 import requests
 import urllib.parse
 import unicodedata
-from flask import Flask, request, redirect, jsonify, make_response
+from flask import Flask, request, redirect, jsonify, make_response, Response
 
 app = Flask(__name__)
 
-# MESTRE: Deixei apenas a lista que você confirmou que está funcional
+# MESTRE: Mantive sua lista e uploader
 LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u"
 ]
-
 UPLOADER_IA = "rafaela_andrea_ferrada_flores"
 
 catalogo_pessoal = {}
@@ -62,6 +61,37 @@ def carregar_m3u():
 carregar_acervo_pessoal()
 carregar_m3u()
 
+# --- MOTOR PROXY CAMALEÃO (NOVO) ---
+@app.route("/stream")
+def proxy_stream():
+    """ Rota que disfarça o site como ExoPlayer para burlar bloqueios """
+    video_url = request.args.get('url')
+    if not video_url: return "URL vazia", 400
+    
+    # O DISFARCE DE MESTRE (ExoPlayer)
+    headers = {
+        'User-Agent': 'ExoPlayerDemo/2.17.1 (Linux;Android 11) ExoPlayerLib/2.17.1',
+        'Referer': video_url
+    }
+    
+    try:
+        # Faz a requisição ao servidor de IPTV original
+        req = requests.get(video_url, headers=headers, stream=True, timeout=15)
+        
+        # Repassa o vídeo em pedaços (chunks) para não estourar a memória do Render
+        def generate():
+            for chunk in req.iter_content(chunk_size=8192):
+                yield chunk
+
+        # Cria a resposta com os cabeçalhos de vídeo corretos e libera o CORS
+        response = Response(generate(), content_type=req.headers.get('content-type'))
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
+    except Exception as e:
+        return f"Erro no streaming: {str(e)}", 500
+
+# --- FIM DO MOTOR PROXY ---
+
 def obter_link_direto_ia(identifier):
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
@@ -79,10 +109,8 @@ def buscar():
     if not titulo: return "Título vazio", 400
     
     titulo_busca = limpar_texto(titulo)
-    titulo_sem_ano = re.sub(r'\s\d{4}$', '', titulo_busca).strip()
     link = None
     
-    # 1. PRIORIDADE MÁXIMA: ARCHIVE.ORG (Busca Exata e Aproximada)
     if titulo_busca in catalogo_pessoal:
         link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
     
@@ -92,12 +120,10 @@ def buscar():
                 link = obter_link_direto_ia(ident)
                 break
     
-    # 2. PLANO B: SÓ OLHA A M3U SE NÃO ACHOU NO SEU ACERVO
     if not link:
         if titulo_busca in catalogo_filmes:
             link = catalogo_filmes[titulo_busca]
         else:
-            # Busca aproximada na M3U (Apenas para nomes longos para evitar erro)
             if len(titulo_busca) > 4:
                 for nome_cat in catalogo_filmes:
                     if titulo_busca in nome_cat or nome_cat in titulo_busca:
@@ -105,7 +131,12 @@ def buscar():
                         break
 
     if link:
-        # Ajuste para o botão vermelho: Força o navegador a aceitar o redirecionamento
+        # MESTRE: Se for link de IPTV (não Archive.org), usamos o Proxy automaticamente
+        if "archive.org" not in link:
+            # Redireciona para a nossa rota de stream que tem o disfarce
+            proxy_url = f"/stream?url={urllib.parse.quote(link)}"
+            return redirect(proxy_url)
+        
         response = make_response(redirect(link))
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
@@ -115,12 +146,12 @@ def buscar():
 @app.route("/atualizar")
 def atualizar():
     carregar_acervo_pessoal()
-    carregar_m3u() # Agora atualiza os dois para garantir
+    carregar_m3u()
     return jsonify({"status": "sucesso", "ia": len(catalogo_pessoal), "m3u": len(catalogo_filmes)}), 200
 
 @app.route("/")
 def index():
-    return f"🚀 Sniper Online | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}", 200
+    return f"🚀 Cine Mega Sniper | Render | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}", 200
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
