@@ -1,5 +1,3 @@
-BACKUP API RENDER
-
 import os
 import re
 import requests
