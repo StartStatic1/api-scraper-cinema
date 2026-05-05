@@ -10,6 +10,7 @@ app = Flask(__name__)
 # MESTRE: Deixei apenas a lista que você confirmou que está funcional
 LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u"
+    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
 
 UPLOADER_IA = "rafaela_andrea_ferrada_flores"
@@ -36,26 +37,32 @@ def carregar_acervo_pessoal():
             catalogo_pessoal[limpar_texto(titulo)] = id_ia
     except: pass
 
+# 🔥 AQUI ESTÁ A MANUTENÇÃO: Lógica com "Memória" para não quebrar a formatação
 def carregar_m3u():
     global catalogo_filmes
     catalogo_filmes = {}
     for url in LISTAS_M3U:
         try:
             r = requests.get(url, stream=True, timeout=60)
-            it = r.iter_lines()
+            ultimo_nome = None # A memória
             contador = 0
-            for linha in it:
+            
+            for linha in r.iter_lines():
                 if contador > 160000: break
                 if not linha: continue
+                
                 l = linha.decode('utf-8', errors='ignore').strip()
+                
+                # Guarda o nome
                 if l.startswith("#EXTINF"):
-                    nome_limpo = limpar_texto(l.split(",")[-1])
-                    try:
-                        link = next(it).decode('utf-8', errors='ignore').strip()
-                        if link.startswith("http") and nome_limpo not in catalogo_filmes:
-                            catalogo_filmes[nome_limpo] = link
-                            contador += 1
-                    except StopIteration: break
+                    ultimo_nome = limpar_texto(l.split(",")[-1])
+                
+                # Acha o link e junta com o nome guardado
+                elif l.startswith("http") and ultimo_nome:
+                    if ultimo_nome not in catalogo_filmes:
+                        catalogo_filmes[ultimo_nome] = l
+                        contador += 1
+                    ultimo_nome = None # Limpa a memória pro próximo
         except: pass
 
 # Carga inicial
