@@ -7,9 +7,9 @@ from flask import Flask, request, redirect, jsonify, make_response
 
 app = Flask(__name__)
 
-# MESTRE: Deixei apenas a lista que você confirmou que está funcional
+# MESTRE: Coloque aqui as suas duas URLs de M3U
 LISTAS_M3U = [
-    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u"
+    "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u",
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
 
@@ -37,33 +37,33 @@ def carregar_acervo_pessoal():
             catalogo_pessoal[limpar_texto(titulo)] = id_ia
     except: pass
 
-# 🔥 AQUI ESTÁ A MANUTENÇÃO: Lógica com "Memória" para não quebrar a formatação
 def carregar_m3u():
     global catalogo_filmes
-    catalogo_filmes = {}
+    catalogo_filmes = {} # Reseta no início
     for url in LISTAS_M3U:
         try:
+            # timeout maior e stream para aguentar listas pesadas
             r = requests.get(url, stream=True, timeout=60)
-            ultimo_nome = None # A memória
-            contador = 0
+            ultimo_nome = None 
+            contador_lista = 0
             
             for linha in r.iter_lines():
-                if contador > 160000: break
                 if not linha: continue
-                
                 l = linha.decode('utf-8', errors='ignore').strip()
                 
-                # Guarda o nome
+                # Se achar o nome, guarda na memória e espera o link
                 if l.startswith("#EXTINF"):
                     ultimo_nome = limpar_texto(l.split(",")[-1])
                 
-                # Acha o link e junta com o nome guardado
+                # Se achar o link e tiver um nome guardado, faz o par!
                 elif l.startswith("http") and ultimo_nome:
                     if ultimo_nome not in catalogo_filmes:
                         catalogo_filmes[ultimo_nome] = l
-                        contador += 1
-                    ultimo_nome = None # Limpa a memória pro próximo
-        except: pass
+                        contador_lista += 1
+                    ultimo_nome = None # Limpa para o próximo filme
+            print(f"✅ Lista carregada: {url} | Filmes: {contador_lista}")
+        except Exception as e:
+            print(f"❌ Erro ao carregar {url}: {e}")
 
 # Carga inicial
 carregar_acervo_pessoal()
@@ -86,25 +86,17 @@ def buscar():
     if not titulo: return "Título vazio", 400
     
     titulo_busca = limpar_texto(titulo)
-    titulo_sem_ano = re.sub(r'\s\d{4}$', '', titulo_busca).strip()
     link = None
     
-    # 1. PRIORIDADE MÁXIMA: ARCHIVE.ORG (Busca Exata e Aproximada)
+    # 1. Busca no Archive.org
     if titulo_busca in catalogo_pessoal:
         link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
     
-    if not link:
-        for nome_cat, ident in catalogo_pessoal.items():
-            if titulo_busca in nome_cat or nome_cat in titulo_busca:
-                link = obter_link_direto_ia(ident)
-                break
-    
-    # 2. PLANO B: SÓ OLHA A M3U SE NÃO ACHOU NO SEU ACERVO
+    # 2. Busca na M3U (Acervo das listas)
     if not link:
         if titulo_busca in catalogo_filmes:
             link = catalogo_filmes[titulo_busca]
         else:
-            # Busca aproximada na M3U (Apenas para nomes longos para evitar erro)
             if len(titulo_busca) > 4:
                 for nome_cat in catalogo_filmes:
                     if titulo_busca in nome_cat or nome_cat in titulo_busca:
@@ -112,7 +104,6 @@ def buscar():
                         break
 
     if link:
-        # Ajuste para o botão vermelho: Força o navegador a aceitar o redirecionamento
         response = make_response(redirect(link))
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
@@ -122,7 +113,7 @@ def buscar():
 @app.route("/atualizar")
 def atualizar():
     carregar_acervo_pessoal()
-    carregar_m3u() # Agora atualiza os dois para garantir
+    carregar_m3u()
     return jsonify({"status": "sucesso", "ia": len(catalogo_pessoal), "m3u": len(catalogo_filmes)}), 200
 
 @app.route("/")
