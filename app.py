@@ -13,8 +13,8 @@ LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
 
-# Seu e-mail real para o Sniper não errar o alvo
-UPLOADER_EMAIL = "rafflores17@gmail.com"
+# CORREÇÃO: Usando o Nome de Usuário do Archive.org (Sem o @ e não o e-mail)
+UPLOADER_USER = "rafaela_andrea_ferrada_flores"
 
 catalogo_pessoal = {}
 catalogo_filmes = {}
@@ -31,9 +31,8 @@ def carregar_acervo_pessoal():
     catalogo_pessoal = {}
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # Busca oficial pelo e-mail do uploader
-        email_seguro = urllib.parse.quote(UPLOADER_EMAIL)
-        url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({email_seguro})&fl[]=identifier,title&output=json&rows=1000"
+        # Busca oficial pelo HANDLE do uploader (agora vai achar seus arquivos!)
+        url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
         
         r = requests.get(url_ia, headers=headers, timeout=20).json()
         items = r.get('response', {}).get('docs', [])
@@ -43,9 +42,9 @@ def carregar_acervo_pessoal():
             titulo = doc.get('title', id_ia)
             if id_ia:
                 catalogo_pessoal[limpar_texto(titulo)] = id_ia
-        print(f"✅ IA Carregada: {len(catalogo_pessoal)} filmes")
-    except: 
-        print("❌ Falha ao carregar Archive.org")
+        print(f"✅ IA Carregada: {len(catalogo_pessoal)} filmes do seu acervo")
+    except Exception as e: 
+        print(f"❌ Falha ao carregar Archive.org: {e}")
 
 def carregar_m3u():
     global catalogo_filmes
@@ -93,20 +92,20 @@ def buscar():
     titulo_busca = limpar_texto(titulo)
     link = None
     
-    # 🔍 ORDEM DE PESQUISA (A LÓGICA):
-    
-    # 1. TENTA NO SEU ACERVO (IA) PRIMEIRO
+    # 🔍 1. TENTA NO SEU ACERVO (IA) PRIMEIRO
     if titulo_busca in catalogo_pessoal:
         link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
     
-    # 2. SE NÃO ACHOU, TENTA NA M3U (BUSCA EXATA)
+    # 🔍 2. SE NÃO ACHOU, TENTA NA M3U (BUSCA EXATA)
     if not link and titulo_busca in catalogo_filmes:
         link = catalogo_filmes[titulo_busca]
         
-    # 3. ÚLTIMA CHANCE: BUSCA APROXIMADA NA M3U
+    # 🔍 3. ÚLTIMA CHANCE: BUSCA APROXIMADA NA M3U (CORRIGIDA)
     if not link and len(titulo_busca) > 4:
         for nome_cat in catalogo_filmes:
-            if titulo_busca in nome_cat or nome_cat in titulo_busca:
+            # CORREÇÃO DO BUG 'MA': Agora o título buscado TEM que estar no nome do catálogo.
+            # Removemos a regra 'nome_cat in titulo_busca' que invertia a lógica.
+            if titulo_busca in nome_cat:
                 link = catalogo_filmes[nome_cat]
                 break
 
