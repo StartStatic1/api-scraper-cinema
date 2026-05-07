@@ -30,16 +30,12 @@ def limpar_texto(texto):
 def carregar_acervo_pessoal():
     global catalogo_pessoal
     catalogo_pessoal = {}
-    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
-        r = requests.get(url_ia, headers=headers, timeout=20).json()
-        items = r.get('response', {}).get('docs', [])
-        for doc in items:
+        r = requests.get(url_ia, timeout=20).json()
+        for doc in r.get('response', {}).get('docs', []):
             id_ia = doc.get('identifier')
-            titulo = doc.get('title', id_ia)
-            if id_ia:
-                catalogo_pessoal[limpar_texto(titulo)] = id_ia
+            if id_ia: catalogo_pessoal[limpar_texto(doc.get('title', id_ia))] = id_ia
         print("✅ Acervo Pessoal OK")
     except: print("❌ Erro Archive.org")
 
@@ -53,11 +49,9 @@ def carregar_m3u():
             for linha in r.iter_lines():
                 if not linha: continue
                 l = linha.decode('utf-8', errors='ignore').strip()
-                if l.startswith("#EXTINF"):
-                    ultimo_nome = limpar_texto(l.split(",")[-1])
+                if l.startswith("#EXTINF"): ultimo_nome = limpar_texto(l.split(",")[-1])
                 elif l.startswith("http") and ultimo_nome:
-                    if ultimo_nome not in catalogo_filmes:
-                        catalogo_filmes[ultimo_nome] = []
+                    if ultimo_nome not in catalogo_filmes: catalogo_filmes[ultimo_nome] = []
                     catalogo_filmes[ultimo_nome].append(l)
                     ultimo_nome = None
         except: pass
@@ -81,22 +75,32 @@ def testar_link(url):
     except: return False
 
 def buscar_alldebrid_pro(titulo, id_tmdb=""):
+    """Busca em múltiplos trackers via IMDB ID e AllDebrid Instant"""
     if not ALLDEBRID_API: return None
     try:
         termos = [titulo]
         if id_tmdb:
             tm = requests.get(f"https://api.themoviedb.org/3/movie/{id_tmdb}?api_key={TMDB_API_KEY}").json()
+            if tm.get("imdb_id"): termos.insert(0, tm["imdb_id"])
             if tm.get("original_title"): termos.append(tm["original_title"])
-            if tm.get("imdb_id"): termos.insert(0, tm["imdb_id"]) # ID IMDB vira a PRIMEIRA opção
 
         for t in termos:
-            yts = requests.get(f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(t)}&limit=1").json()
-            if yts.get("data", {}).get("movies"):
-                mag = f"magnet:?xt=urn:btih:{yts['data']['movies'][0]['torrents'][0]['hash']}"
+            # 1. Tenta achar algo já pronto (Instant) em trackers mundiais (1337x, etc)
+            inst = requests.get(f"https://api.alldebrid.com/v4/magnets/instant?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(t)}").json()
+            
+            # Se o AllDebrid achar um torrent "quente" em qualquer tracker:
+            if inst.get("status") == "success" and inst["data"]["magnets"][0]["instant"]:
+                mag = f"magnet:?xt=urn:btih:{inst['data']['magnets'][0]['hash']}"
+            else:
+                # 2. Fallback pro YTS se o Instant falhar
+                yts = requests.get(f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(t)}&limit=1").json()
+                mag = f"magnet:?xt=urn:btih:{yts['data']['movies'][0]['torrents'][0]['hash']}" if yts.get("data", {}).get("movies") else None
+
+            if mag:
                 up = requests.get(f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}").json()
                 if up.get("status") == "success":
                     m_id = up["data"]["magnets"][0]["id"]
-                    time.sleep(4) # Espera estratégica de 4 segundos
+                    time.sleep(4) 
                     st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
                     links = st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
                     if links:
@@ -109,36 +113,30 @@ def buscar_alldebrid_pro(titulo, id_tmdb=""):
 def buscar():
     titulo = request.args.get("titulo", "")
     tmdb_id = request.args.get("id", "")
-    if not titulo: return "Título vazio", 400
+    if not titulo: return "Vazio", 400
     
     t_busca = limpar_texto(titulo)
     link = None
     
-    # 1. ACERVO PESSOAL (IA)
-    if t_busca in catalogo_pessoal:
-        link = obter_link_direto_ia(catalogo_pessoal[t_busca])
+    # 1. ACERVO PESSOAL
+    if t_busca in catalogo_pessoal: link = obter_link_direto_ia(catalogo_pessoal[t_busca])
     
-    # 2. ALLDEBRID (FORÇA BRUTA)
-    if not link:
-        link = buscar_alldebrid_pro(t_busca, tmdb_id)
+    # 2. ALLDEBRID MULTI-TRACKER (Prioridade para qualidade)
+    if not link: link = buscar_alldebrid_pro(t_busca, tmdb_id)
 
-    # 3. LISTAS M3U
+    # 3. M3U FAILOVER
     if not link and t_busca in catalogo_filmes:
         for l in catalogo_filmes[t_busca]:
             if testar_link(l): link = l; break
-        if not link and catalogo_filmes[t_busca]: link = catalogo_filmes[t_busca][0]
+        if not link: link = catalogo_filmes[t_busca][0]
 
-    # SE ACHOU (IA OU DEBRID), REDIRECIONA PARA O LINK LIMPO
     if link:
         res = make_response(redirect(link))
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
     
-    # 4. ÚLTIMO RECURSO (VIDSRC COM PROPAGANDA)
-    if tmdb_id:
-        return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
-    
-    return "Filme não encontrado", 404
+    if tmdb_id: return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
+    return "404", 404
 
 @app.route("/atualizar")
 def atualizar():
@@ -147,7 +145,7 @@ def atualizar():
 
 @app.route("/")
 def index():
-    return f"🚀 Sniper PRO Ativo | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
+    return f"🚀 Sniper PRO Multi-Tracker | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
