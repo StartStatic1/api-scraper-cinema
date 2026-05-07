@@ -3,6 +3,7 @@ import re
 import requests
 import urllib.parse
 import unicodedata
+import time  # O famoso pulo do gato
 from flask import Flask, request, redirect, jsonify, make_response
 
 app = Flask(__name__)
@@ -71,13 +72,11 @@ def obter_link_direto_ia(identifier):
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
         arquivos = r.get("files", [])
-        # Prioriza MP4 com compressão de vídeo (H.264/MPEG4) para rodar direto
         for f in arquivos:
             nome = f.get("name", "").lower()
             fmt = f.get("format", "").lower()
             if nome.endswith('.mp4') and ("h.264" in fmt or "mpeg4" in fmt or "h264" in fmt):
                 return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
-        # Backup: qualquer MP4
         for f in arquivos:
             if f.get("name", "").lower().endswith('.mp4'):
                 return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
@@ -96,7 +95,6 @@ def testar_link(url):
 def buscar_alldebrid_pro(titulo):
     """Busca o Torrent e converte em Link VIP pelo AllDebrid"""
     try:
-        # Busca Torrent (YTS como fonte estável)
         url_yts = f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1"
         r_yts = requests.get(url_yts, timeout=5).json()
         if not r_yts.get("data", {}).get("movies"): return None
@@ -106,17 +104,30 @@ def buscar_alldebrid_pro(titulo):
         # Upload para AllDebrid
         url_up = f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(magnet)}"
         r_up = requests.get(url_up, timeout=5).json()
+        
+        if r_up.get("status") != "success": return None
         m_id = r_up["data"]["magnets"][0]["id"]
         
-        # Pega link e desbloqueia
+        # O PULO DO GATO 🐈 (Tempo para o AllDebrid processar o Torrent)
+        time.sleep(2)
+        
+        # Pega link gerado
         url_st = f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}"
         r_st = requests.get(url_st, timeout=5).json()
-        links = r_st["data"]["magnets"].get(str(m_id), {}).get("links", [])
+        
+        links = r_st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
         if not links: return None
         
+        # Desbloqueia o link premium
         url_un = f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}"
-        return requests.get(url_un, timeout=5).json()["data"]["link"]
-    except: return None
+        r_un = requests.get(url_un, timeout=5).json()
+        
+        if r_un.get("status") == "success":
+            return r_un["data"]["link"]
+        return None
+    except Exception as e: 
+        print(f"Erro AllDebrid: {e}")
+        return None
 
 @app.route("/buscar")
 def buscar():
@@ -136,7 +147,7 @@ def buscar():
                 link = obter_link_direto_ia(i_ia)
                 if link: break
 
-    # 🥈 2. ALLDEBRID (MODO PRO) - FILMES NOVOS/CATÁLOGO MUNDIAL
+    # 🥈 2. ALLDEBRID (MODO PRO) - FILMES NOVOS/MUNDIAIS
     if not link:
         link = buscar_alldebrid_pro(t_busca)
 
@@ -148,12 +159,17 @@ def buscar():
                 break
         if not link: link = catalogo_filmes[t_busca][0]
 
+    # SE ACHOU ALGO (IA, DEBRID OU M3U), REDIRECIONA DIRETO PRO PLAYER!
     if link:
         res = make_response(redirect(link))
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
     
-    return redirect(f"https://vidsrc.me/embed/movie?tmdb={tmdb_id if tmdb_id else t_busca}")
+    # SE TUDO FALHAR, USA O VIDSRC CORRETAMENTE (APENAS COM NÚMERO DE ID)
+    if tmdb_id and tmdb_id.isdigit():
+        return redirect(f"https://vidsrc.net/embed/movie?tmdb={tmdb_id}")
+    else:
+        return "Filme não encontrado no motor. Tente outro.", 404
 
 @app.route("/atualizar")
 def atualizar():
