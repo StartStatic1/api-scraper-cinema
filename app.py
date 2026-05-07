@@ -2,291 +2,802 @@ import os
 import re
 import time
 import json
+import queue
 import requests
+import threading
 import urllib.parse
 import unicodedata
-from bs4 import BeautifulSoup
+
 from rapidfuzz import fuzz
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request, redirect, jsonify
 
 app = Flask(__name__)
 
-# ====== CONFIGURAÇÕES ======
+# =========================================================
+# CONFIG
+# =========================================================
+
 LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u",
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
-UPLOADER_USER = "cinemega"
+
+UPLOADER_USER = "rafaela_andrea_ferrada_flores"
+
 ALLDEBRID_API = "HGt5I30bMYFLdhzDKZ06"
+
 TMDB_API_KEY = "c90fb79a2f7d756a49bee848bce5f413"
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 "
+        "(Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 "
+        "(KHTML, like Gecko) "
+        "Chrome/124 Safari/537.36"
+    )
+}
+
+# =========================================================
+# CACHE
+# =========================================================
+
+cache_tmdb = {}
+cache_busca = {}
+cache_archive = {}
+cache_debrid = {}
+
+# =========================================================
+# DATABASES
+# =========================================================
 
 catalogo_pessoal = {}
 catalogo_filmes = {}
 
-# ========== FUNÇÕES AUXILIARES ==========
+# =========================================================
+# NORMALIZAÇÃO
+# =========================================================
+
 def limpar_texto(texto):
-    if not texto: return ""
-    texto = unicodedata.normalize("NFKD", str(texto)).encode("ASCII", "ignore").decode("utf-8").lower()
-    texto = re.sub(r'\[.*?\]|\(.*?\)', ' ', texto)
-    lixo = ["dublado", "dual", "1080p", "720p", "4k", "bluray", "webdl", "torrent", "completo",
-            "5.1", "h264", "h265", "x264", "x265", "hevc", "aac", "dts"]
-    for l in lixo: texto = texto.replace(l, " ")
-    return re.sub(r'[^a-zA-Z0-9\s]', ' ', texto).strip()
 
-def carregar_dados():
-    global catalogo_pessoal, catalogo_filmes
+    texto = str(texto)
+
+    texto = unicodedata.normalize(
+        "NFKD",
+        texto
+    ).encode(
+        "ASCII",
+        "ignore"
+    ).decode(
+        "utf-8"
+    )
+
+    texto = texto.lower()
+
+    texto = re.sub(r'\[[^\]]*\]', ' ', texto)
+    texto = re.sub(r'\([^\)]*\)', ' ', texto)
+
+    lixo = [
+        "dublado",
+        "dual audio",
+        "1080p",
+        "720p",
+        "2160p",
+        "4k",
+        "bluray",
+        "webdl",
+        "webrip",
+        "x264",
+        "x265",
+        "h264",
+        "h265",
+        "hdrip",
+        "torrent",
+        "oficial"
+    ]
+
+    for l in lixo:
+        texto = texto.replace(l, " ")
+
+    texto = re.sub(r'[^a-zA-Z0-9\s]', ' ', texto)
+
+    texto = re.sub(r'\s+', ' ', texto)
+
+    return texto.strip()
+
+# =========================================================
+# MATCH FUZZY
+# =========================================================
+
+def melhor_match(busca, catalogo, minimo=82):
+
+    melhor = None
+    score_final = 0
+
+    for titulo in catalogo:
+
+        score = fuzz.ratio(busca, titulo)
+
+        if score > score_final:
+            score_final = score
+            melhor = titulo
+
+    if score_final >= minimo:
+        return melhor
+
+    return None
+
+# =========================================================
+# TMDB
+# =========================================================
+
+def buscar_tmdb(nome):
+
+    if nome in cache_tmdb:
+        return cache_tmdb[nome]
+
     try:
-        url = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
-        r = requests.get(url, timeout=30).json()
-        docs = r.get('response', {}).get('docs', [])
-        catalogo_pessoal = {limpar_texto(doc.get('title', doc['identifier'])): doc['identifier'] for doc in docs if 'identifier' in doc}
-        print(f"✅ Archive carregado: {len(catalogo_pessoal)} filmes")
+
+        url = (
+            "https://api.themoviedb.org/3/search/movie"
+        )
+
+        r = requests.get(
+            url,
+            params={
+                "api_key": TMDB_API_KEY,
+                "query": nome,
+                "language": "pt-BR"
+            },
+            headers=HEADERS,
+            timeout=20
+        )
+
+        dados = r.json()
+
+        if dados.get("results"):
+
+            filme = dados["results"][0]
+
+            cache_tmdb[nome] = filme
+
+            return filme
+
+    except:
+        pass
+
+    return None
+
+# =========================================================
+# ARCHIVE
+# =========================================================
+
+def carregar_acervo_pessoal():
+
+    global catalogo_pessoal
+
+    catalogo_pessoal = {}
+
+    try:
+
+        url = (
+            "https://archive.org/advancedsearch.php"
+            f"?q=uploader:({UPLOADER_USER})"
+            "&fl[]=identifier,title"
+            "&output=json"
+            "&rows=10000"
+        )
+
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=60
+        )
+
+        dados = r.json()
+
+        docs = dados.get(
+            "response",
+            {}
+        ).get(
+            "docs",
+            []
+        )
+
+        for doc in docs:
+
+            identifier = doc.get("identifier")
+
+            titulo = limpar_texto(
+                doc.get(
+                    "title",
+                    identifier
+                )
+            )
+
+            if identifier:
+                catalogo_pessoal[titulo] = identifier
+
+        print(f"✅ Archive: {len(catalogo_pessoal)}")
+
     except Exception as e:
-        print(f"❌ Erro Archive: {e}")
-    
+
+        print("❌ Archive:", e)
+
+# =========================================================
+# M3U
+# =========================================================
+
+def carregar_m3u():
+
+    global catalogo_filmes
+
+    catalogo_filmes = {}
+
     for url in LISTAS_M3U:
+
         try:
-            r = requests.get(url, timeout=30).text
-            nome = None
-            for linha in r.splitlines():
-                if linha.startswith("#EXTINF"):
-                    nome = limpar_texto(linha.split(",")[-1])
-                elif linha.startswith("http") and nome:
-                    if nome not in catalogo_filmes:
-                        catalogo_filmes[nome] = []
-                    catalogo_filmes[nome].append(linha)
-                    nome = None
+
+            r = requests.get(
+                url,
+                headers=HEADERS,
+                stream=True,
+                timeout=90
+            )
+
+            ultimo_nome = None
+
+            for linha in r.iter_lines():
+
+                if not linha:
+                    continue
+
+                l = linha.decode(
+                    "utf-8",
+                    errors="ignore"
+                ).strip()
+
+                if l.startswith("#EXTINF"):
+
+                    try:
+
+                        nome = l.split(",")[-1]
+
+                        ultimo_nome = limpar_texto(nome)
+
+                    except:
+
+                        ultimo_nome = None
+
+                elif l.startswith("http") and ultimo_nome:
+
+                    if ultimo_nome not in catalogo_filmes:
+                        catalogo_filmes[ultimo_nome] = []
+
+                    if l not in catalogo_filmes[ultimo_nome]:
+                        catalogo_filmes[ultimo_nome].append(l)
+
+                    ultimo_nome = None
+
+            print(f"✅ M3U OK")
+
         except Exception as e:
-            print(f"❌ Erro M3U {url}: {e}")
 
-carregar_dados()
+            print("❌ M3U:", e)
 
-def buscar_archive(titulo_limpo):
-    """Acervo pessoal do Archive.org"""
-    melhor_t = None
-    melhor_score = 0
-    for t in catalogo_pessoal:
-        score = fuzz.ratio(titulo_limpo, t)
-        if score > melhor_score:
-            melhor_score = score
-            melhor_t = t
-    if melhor_score < 65 or not melhor_t:
-        return None
-    ident = catalogo_pessoal[melhor_t]
+# =========================================================
+# ARCHIVE LINK
+# =========================================================
+
+def obter_link_archive(identifier):
+
+    if identifier in cache_archive:
+        return cache_archive[identifier]
+
     try:
-        meta = requests.get(f"https://archive.org/metadata/{ident}", timeout=10).json()
-        arquivos = meta.get('files', [])
+
+        url = f"https://archive.org/metadata/{identifier}"
+
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=30
+        )
+
+        dados = r.json()
+
+        arquivos = dados.get("files", [])
+
+        melhores = []
+
         for f in arquivos:
-            if f['name'].lower().endswith('.mp4'):
-                return f"https://archive.org/download/{ident}/{urllib.parse.quote(f['name'])}"
-        for f in arquivos:
-            if f['name'].lower().endswith('.mkv'):
-                return f"https://archive.org/download/{ident}/{urllib.parse.quote(f['name'])}"
+
+            nome = f.get("name", "").lower()
+
+            if nome.endswith((
+                ".mp4",
+                ".mkv",
+                ".avi",
+                ".mov"
+            )):
+
+                tamanho = int(
+                    f.get("size", 0)
+                )
+
+                melhores.append(
+                    (
+                        tamanho,
+                        f.get("name")
+                    )
+                )
+
+        if melhores:
+
+            melhores.sort(reverse=True)
+
+            arquivo = melhores[0][1]
+
+            final = (
+                f"https://archive.org/download/"
+                f"{identifier}/"
+                f"{urllib.parse.quote(arquivo)}"
+            )
+
+            cache_archive[identifier] = final
+
+            return final
+
     except:
         pass
+
     return None
 
-def obter_imdb_id(tmdb_id):
-    if not tmdb_id: return None
-    try:
-        tm = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}&language=pt-BR", timeout=10).json()
-        return tm.get("imdb_id")
-    except:
-        return None
+# =========================================================
+# ALLDEBRID
+# =========================================================
 
-def torrentio_streams(imdb_id):
-    """Puxa lista de torrents do Torrentio (já ordenada por idioma)"""
-    if not imdb_id: return []
-    try:
-        url = f"https://torrentio.strem.fun/stream/movie/{imdb_id}.json"
-        resp = requests.get(url, headers=HEADERS, timeout=15).json()
-        streams = resp.get("streams", [])
-        results = []
-        for s in streams:
-            title = s.get("title", "")
-            info_hash = s.get("infoHash")
-            if not info_hash: continue
-            magnet = f"magnet:?xt=urn:btih:{info_hash}"
-            lang_score = 0
-            lower = title.lower()
-            if any(x in lower for x in ["dual audio", "dublado", "portugues", "pt-br"]): lang_score = 3
-            elif "legendado" in lower or "subs" in lower: lang_score = 2
-            elif "english" in lower: lang_score = 1
-            if "2160p" in lower or "4k" in lower: lang_score += 0.5
-            elif "1080p" in lower: lang_score += 0.3
-            results.append({"title": title, "magnet": magnet, "info_hash": info_hash, "lang_score": lang_score})
-        results.sort(key=lambda x: x["lang_score"], reverse=True)
-        return results
-    except Exception as e:
-        print(f"❌ Torrentio: {e}")
-        return []
+def buscar_debrid(titulo, tmdb_id=""):
 
-def scrape_1337x(imdb_id, titulo_limpo):
-    """
-    Raspagem direta no 1337x.to buscando filme (prioriza PT-BR).
-    Retorna lista de magnets ordenados por pontuação de idioma.
-    """
-    if not imdb_id and not titulo_limpo: return []
-    # Constrói query usando IMDB ID primeiro (mais preciso) ou título
-    query = imdb_id or titulo_limpo
-    search_url = f"https://1337x.to/search/{urllib.parse.quote(query)}+1080p/1/"
-    magnets = []
+    cache_key = f"{titulo}_{tmdb_id}"
+
+    if cache_key in cache_debrid:
+        return cache_debrid[cache_key]
+
     try:
-        resp = requests.get(search_url, headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(resp.text, "html.parser")  # usa html.parser (já incluso)
-        # Localiza a tabela de resultados
-        table = soup.find("table", class_="table-list")
-        if not table: return magnets
-        rows = table.find_all("tr")[1:]  # pula cabeçalho
-        for row in rows:
-            cells = row.find_all("td")
-            if len(cells) < 4: continue
-            name_cell = cells[0].find_all("a")[-1]  # último link é o nome
-            title = name_cell.get_text(strip=True)
-            # Determina pontuação de idioma
-            lang_score = 0
-            lower = title.lower()
-            if any(x in lower for x in ["dual audio", "dublado", "portugues", "pt-br"]): lang_score = 3
-            elif "legendado" in lower or "subs" in lower: lang_score = 2
-            elif "english" in lower: lang_score = 1
-            # Pega link da página do torrent para extrair magnet
-            torrent_page = "https://1337x.to" + name_cell["href"]
-            # Visita a página individual
+
+        termos = [titulo]
+
+        if tmdb_id:
+
             try:
-                page_resp = requests.get(torrent_page, headers=HEADERS, timeout=10)
-                page_soup = BeautifulSoup(page_resp.text, "html.parser")
-                # Procura o link magnet
-                magnet_link = None
-                for a in page_soup.find_all("a"):
-                    href = a.get("href", "")
-                    if href.startswith("magnet:"):
-                        magnet_link = href
-                        break
-                if magnet_link:
-                    magnets.append({"magnet": magnet_link, "title": title, "lang_score": lang_score})
-            except:
-                continue
-        # Ordena por score
-        magnets.sort(key=lambda x: x["lang_score"], reverse=True)
-        return magnets
-    except Exception as e:
-        print(f"❌ 1337x scrape: {e}")
-        return []
 
-def alldebrid_instant(magnet):
-    try:
-        encoded = urllib.parse.quote(magnet)
-        url = f"https://api.alldebrid.com/v4/magnets/instant?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={encoded}"
-        resp = requests.get(url, timeout=10).json()
-        if resp.get("status") == "success":
-            magnet_data = resp["data"]["magnets"][0]
-            return magnet_data.get("instant", False), magnet_data.get("hash")
-    except:
-        pass
-    return False, None
-
-def alldebrid_unlock(link):
-    try:
-        encoded = urllib.parse.quote(link)
-        un = requests.get(f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={encoded}", timeout=10).json()
-        if un.get("status") == "success":
-            return un["data"]["link"]
-    except:
-        pass
-    return None
-
-def alldebrid_upload_and_wait(magnet, timeout=15):
-    try:
-        up = requests.get(
-            f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(magnet)}",
-            timeout=10
-        ).json()
-        if up.get("status") != "success": return None
-        magnet_id = up["data"]["magnets"][0]["id"]
-        start = time.time()
-        while time.time() - start < timeout:
-            st = requests.get(
-                f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={magnet_id}", timeout=10
-            ).json()
-            if st.get("status") == "success":
-                links = st["data"]["magnets"].get(str(magnet_id), {}).get("links", [])
-                if links:
-                    return alldebrid_unlock(links[0]["link"])
-            time.sleep(3)
-    except:
-        pass
-    return None
-
-def processar_magnets(magnets):
-    """Percorre uma lista de magnets e retorna o primeiro link de streaming funcional."""
-    for m in magnets:
-        instant, _ = alldebrid_instant(m["magnet"])
-        if instant:
-            # Tenta obter link instantâneo
-            up = requests.get(
-                f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(m['magnet'])}",
-                timeout=10
-            ).json()
-            if up.get("status") == "success":
-                mid = up["data"]["magnets"][0]["id"]
-                st = requests.get(
-                    f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={mid}", timeout=10
+                tmdb = requests.get(
+                    f"https://api.themoviedb.org/3/movie/{tmdb_id}",
+                    params={
+                        "api_key": TMDB_API_KEY
+                    },
+                    headers=HEADERS,
+                    timeout=20
                 ).json()
-                if st.get("status") == "success":
-                    links = st["data"]["magnets"].get(str(mid), {}).get("links", [])
-                    if links:
-                        play_link = alldebrid_unlock(links[0]["link"])
-                        if play_link: return play_link
-        # Se não instantâneo, faz upload e espera
-        play_link = alldebrid_upload_and_wait(m["magnet"], timeout=15)
-        if play_link:
-            return play_link
+
+                imdb = tmdb.get("imdb_id")
+
+                original = tmdb.get("original_title")
+
+                if imdb:
+                    termos.insert(0, imdb)
+
+                if original:
+                    termos.append(original)
+
+            except:
+                pass
+
+        for termo in termos:
+
+            termo = termo.strip()
+
+            if not termo:
+                continue
+
+            instant = requests.get(
+                "https://api.alldebrid.com/v4/magnets/instant",
+                params={
+                    "agent": "CineMega",
+                    "apikey": ALLDEBRID_API,
+                    "magnets[]": termo
+                },
+                headers=HEADERS,
+                timeout=40
+            ).json()
+
+            if instant.get("status") != "success":
+                continue
+
+            magnets = instant.get(
+                "data",
+                {}
+            ).get(
+                "magnets",
+                []
+            )
+
+            if not magnets:
+                continue
+
+            for mag in magnets:
+
+                if not mag.get("instant"):
+                    continue
+
+                magnet_hash = mag.get("hash")
+
+                if not magnet_hash:
+                    continue
+
+                magnet_link = (
+                    f"magnet:?xt=urn:btih:{magnet_hash}"
+                )
+
+                upload = requests.get(
+                    "https://api.alldebrid.com/v4/magnet/upload",
+                    params={
+                        "agent": "CineMega",
+                        "apikey": ALLDEBRID_API,
+                        "magnets[]": magnet_link
+                    },
+                    headers=HEADERS,
+                    timeout=40
+                ).json()
+
+                if upload.get("status") != "success":
+                    continue
+
+                mags = upload.get(
+                    "data",
+                    {}
+                ).get(
+                    "magnets",
+                    []
+                )
+
+                if not mags:
+                    continue
+
+                magnet_id = mags[0].get("id")
+
+                if not magnet_id:
+                    continue
+
+                time.sleep(3)
+
+                status = requests.get(
+                    "https://api.alldebrid.com/v4/magnet/status",
+                    params={
+                        "agent": "CineMega",
+                        "apikey": ALLDEBRID_API,
+                        "id": magnet_id
+                    },
+                    headers=HEADERS,
+                    timeout=40
+                ).json()
+
+                links = (
+                    status.get("data", {})
+                    .get("magnets", {})
+                    .get(str(magnet_id), {})
+                    .get("links", [])
+                )
+
+                if not links:
+                    continue
+
+                melhores = []
+
+                for l in links:
+
+                    nome = l.get("filename", "").lower()
+
+                    if any(
+                        x in nome
+                        for x in [
+                            ".mp4",
+                            ".mkv",
+                            ".avi"
+                        ]
+                    ):
+
+                        tamanho = l.get("size", 0)
+
+                        melhores.append(
+                            (
+                                tamanho,
+                                l
+                            )
+                        )
+
+                if not melhores:
+                    continue
+
+                melhores.sort(reverse=True)
+
+                link_original = melhores[0][1].get("link")
+
+                unlock = requests.get(
+                    "https://api.alldebrid.com/v4/link/unlock",
+                    params={
+                        "agent": "CineMega",
+                        "apikey": ALLDEBRID_API,
+                        "link": link_original
+                    },
+                    headers=HEADERS,
+                    timeout=40
+                ).json()
+
+                final = unlock.get(
+                    "data",
+                    {}
+                ).get(
+                    "link"
+                )
+
+                if final:
+
+                    cache_debrid[cache_key] = final
+
+                    return final
+
+    except Exception as e:
+
+        print("❌ Debrid:", e)
+
     return None
 
-# ========== ROTA PRINCIPAL ==========
-@app.route("/buscar")
-def buscar():
-    titulo = request.args.get("titulo", "")
-    tmdb_id = request.args.get("id", "")
-    if not titulo: return "Título vazio", 400
+# =========================================================
+# BUSCA M3U
+# =========================================================
 
-    titulo_limpo = limpar_texto(titulo)
-    # 1. ACERVO PESSOAL (Archive.org)
-    link = buscar_archive(titulo_limpo)
-    if link: return redirect(link)
+def buscar_m3u(titulo):
 
-    imdb_id = obter_imdb_id(tmdb_id) if tmdb_id else None
+    match = melhor_match(
+        titulo,
+        catalogo_filmes
+    )
 
-    # 2. TORRENTIO
-    magnets = torrentio_streams(imdb_id)
-    play = processar_magnets(magnets)
-    if play: return redirect(play)
+    if not match:
+        return None
 
-    # 3. RASPAGEM NO 1337x
-    magnets_1337x = scrape_1337x(imdb_id, titulo_limpo)
-    play = processar_magnets(magnets_1337x)
-    if play: return redirect(play)
+    links = catalogo_filmes.get(match)
 
-    # 4. FALLBACK M3U
-    for t in catalogo_filmes:
-        if fuzz.ratio(titulo_limpo, t) > 85:
-            return redirect(catalogo_filmes[t][0])
+    if not links:
+        return None
 
-    return "Não encontrado", 404
+    return links[0]
+
+# =========================================================
+# BUSCA ARCHIVE
+# =========================================================
+
+def buscar_archive(titulo):
+
+    match = melhor_match(
+        titulo,
+        catalogo_pessoal
+    )
+
+    if not match:
+        return None
+
+    identifier = catalogo_pessoal.get(match)
+
+    if not identifier:
+        return None
+
+    return obter_link_archive(identifier)
+
+# =========================================================
+# SEARCH ENGINE
+# =========================================================
+
+def motor_busca(titulo, tmdb_id=""):
+
+    cache_key = f"{titulo}_{tmdb_id}"
+
+    if cache_key in cache_busca:
+        return cache_busca[cache_key]
+
+    resultados = queue.Queue()
+
+    def tentativa_archive():
+
+        try:
+
+            r = buscar_archive(titulo)
+
+            if r:
+                resultados.put(r)
+
+        except:
+            pass
+
+    def tentativa_debrid():
+
+        try:
+
+            r = buscar_debrid(
+                titulo,
+                tmdb_id
+            )
+
+            if r:
+                resultados.put(r)
+
+        except:
+            pass
+
+    def tentativa_m3u():
+
+        try:
+
+            r = buscar_m3u(titulo)
+
+            if r:
+                resultados.put(r)
+
+        except:
+            pass
+
+    threads = [
+        threading.Thread(target=tentativa_archive),
+        threading.Thread(target=tentativa_debrid),
+        threading.Thread(target=tentativa_m3u)
+    ]
+
+    for t in threads:
+        t.start()
+
+    inicio = time.time()
+
+    while time.time() - inicio < 25:
+
+        try:
+
+            link = resultados.get_nowait()
+
+            if link:
+
+                cache_busca[cache_key] = link
+
+                return link
+
+        except:
+            pass
+
+        time.sleep(0.2)
+
+    return None
+
+# =========================================================
+# INIT
+# =========================================================
+
+carregar_acervo_pessoal()
+carregar_m3u()
+
+# =========================================================
+# HOME
+# =========================================================
 
 @app.route("/")
 def home():
+
     return jsonify({
-        "archive_filmes": len(catalogo_pessoal),
-        "m3u_canais": len(catalogo_filmes),
-        "uploader": UPLOADER_USER
+        "status": "online",
+        "archive": len(catalogo_pessoal),
+        "m3u": len(catalogo_filmes),
+        "cache": len(cache_busca)
     })
+
+# =========================================================
+# RELOAD
+# =========================================================
 
 @app.route("/reload")
 def reload():
-    carregar_dados()
-    return "Banco de Dados Atualizado!"
+
+    carregar_acervo_pessoal()
+    carregar_m3u()
+
+    return jsonify({
+        "status": "reloaded"
+    })
+
+# =========================================================
+# BUSCAR
+# =========================================================
+
+@app.route("/buscar")
+def buscar():
+
+    titulo = request.args.get(
+        "titulo",
+        ""
+    ).strip()
+
+    tmdb_id = request.args.get(
+        "id",
+        ""
+    ).strip()
+
+    if not titulo:
+
+        return jsonify({
+            "erro": "titulo vazio"
+        }), 400
+
+    titulo_limpo = limpar_texto(titulo)
+
+    # =========================================
+    # SEARCH ENGINE
+    # =========================================
+
+    link = motor_busca(
+        titulo_limpo,
+        tmdb_id
+    )
+
+    if link:
+        return redirect(link)
+
+    # =========================================
+    # FALLBACK TMDB
+    # =========================================
+
+    filme = buscar_tmdb(titulo)
+
+    if filme:
+
+        tmdb = filme.get("id")
+
+        if tmdb:
+
+            # FALLBACKS MELHORES QUE VIDSRC
+
+            embeds = [
+
+                f"https://embed.su/embed/movie/{tmdb}",
+
+                f"https://vidlink.pro/movie/{tmdb}",
+
+                f"https://moviesapi.club/movie/{tmdb}",
+
+                f"https://multiembed.mov/directstream.php?video_id={tmdb}&tmdb=1"
+
+            ]
+
+            return redirect(embeds[0])
+
+    return jsonify({
+        "erro": "nao encontrado"
+    }), 404
+
+# =========================================================
+# MAIN
+# =========================================================
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
+    PORT = int(
+        os.environ.get(
+            "PORT",
+            8000
+        )
+    )
+
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        threaded=True
+    )
