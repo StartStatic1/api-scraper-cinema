@@ -1,9 +1,4 @@
-import os
-import re
-import requests
-import urllib.parse
-import unicodedata
-import time
+import os, re, requests, urllib.parse, unicodedata, time
 from flask import Flask, request, redirect, jsonify, make_response
 
 app = Flask(__name__)
@@ -22,8 +17,6 @@ catalogo_filmes = {}
 
 def limpar_texto(texto):
     t = unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8')
-    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
-    t = re.sub(r'(?i)(1080p|720p|4k|fhd|hd|dual|dublado|legendado|completo|filmes|filme)', '', t)
     t = re.sub(r'[^a-zA-Z0-9\s]', '', t)
     return " ".join(t.split()).lower().strip()
 
@@ -31,12 +24,14 @@ def carregar_acervo_pessoal():
     global catalogo_pessoal
     catalogo_pessoal = {}
     try:
+        # Busca tudo do seu usuário no Archive
         url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
         r = requests.get(url_ia, timeout=20).json()
         for doc in r.get('response', {}).get('docs', []):
-            id_ia = doc.get('identifier')
-            if id_ia: catalogo_pessoal[limpar_texto(doc.get('title', id_ia))] = id_ia
-        print("✅ Acervo Pessoal OK")
+            identificador = doc.get('identifier')
+            # Guarda o título limpo para bater com a busca
+            catalogo_pessoal[limpar_texto(doc.get('title', identificador))] = identificador
+        print(f"✅ Acervo Pessoal: {len(catalogo_pessoal)} filmes")
     except: print("❌ Erro Archive.org")
 
 def carregar_m3u():
@@ -63,19 +58,14 @@ def obter_link_direto_ia(identifier):
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
         for f in r.get("files", []):
-            if f.get("name", "").lower().endswith('.mp4'):
+            nome_arq = f.get("name", "").lower()
+            # AGORA ACEITA MP4 E MKV (Fome Animal pode ser MKV)
+            if nome_arq.endswith(('.mp4', '.mkv')):
                 return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
     except: pass
     return None
 
-def testar_link(url):
-    try:
-        r = requests.get(url, headers={'User-Agent': 'VLC/3.0.16'}, stream=True, timeout=3)
-        return r.status_code in [200, 206, 301, 302]
-    except: return False
-
 def buscar_alldebrid_pro(titulo, id_tmdb=""):
-    """Busca em múltiplos trackers via IMDB ID e AllDebrid Instant"""
     if not ALLDEBRID_API: return None
     try:
         termos = [titulo]
@@ -85,22 +75,14 @@ def buscar_alldebrid_pro(titulo, id_tmdb=""):
             if tm.get("original_title"): termos.append(tm["original_title"])
 
         for t in termos:
-            # 1. Tenta achar algo já pronto (Instant) em trackers mundiais (1337x, etc)
+            # Busca Instantânea (Trackers mundiais)
             inst = requests.get(f"https://api.alldebrid.com/v4/magnets/instant?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(t)}").json()
-            
-            # Se o AllDebrid achar um torrent "quente" em qualquer tracker:
             if inst.get("status") == "success" and inst["data"]["magnets"][0]["instant"]:
                 mag = f"magnet:?xt=urn:btih:{inst['data']['magnets'][0]['hash']}"
-            else:
-                # 2. Fallback pro YTS se o Instant falhar
-                yts = requests.get(f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(t)}&limit=1").json()
-                mag = f"magnet:?xt=urn:btih:{yts['data']['movies'][0]['torrents'][0]['hash']}" if yts.get("data", {}).get("movies") else None
-
-            if mag:
                 up = requests.get(f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}").json()
                 if up.get("status") == "success":
                     m_id = up["data"]["magnets"][0]["id"]
-                    time.sleep(4) 
+                    time.sleep(4)
                     st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
                     links = st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
                     if links:
@@ -116,36 +98,25 @@ def buscar():
     if not titulo: return "Vazio", 400
     
     t_busca = limpar_texto(titulo)
-    link = None
     
-    # 1. ACERVO PESSOAL
-    if t_busca in catalogo_pessoal: link = obter_link_direto_ia(catalogo_pessoal[t_busca])
+    # 1. TENTA SEU ARCHIVE PRIMEIRO (Fome Animal tem que sair daqui!)
+    if t_busca in catalogo_pessoal:
+        link = obter_link_direto_ia(catalogo_pessoal[t_busca])
+        if link: return redirect(link)
     
-    # 2. ALLDEBRID MULTI-TRACKER (Prioridade para qualidade)
-    if not link: link = buscar_alldebrid_pro(t_busca, tmdb_id)
+    # 2. TENTA ALLDEBRID (Multi-Tracker)
+    link_debrid = buscar_alldebrid_pro(t_busca, tmdb_id)
+    if link_debrid: return redirect(link_debrid)
 
-    # 3. M3U FAILOVER
-    if not link and t_busca in catalogo_filmes:
-        for l in catalogo_filmes[t_busca]:
-            if testar_link(l): link = l; break
-        if not link: link = catalogo_filmes[t_busca][0]
+    # 3. TENTA M3U
+    if t_busca in catalogo_filmes:
+        return redirect(catalogo_filmes[t_busca][0])
 
-    if link:
-        res = make_response(redirect(link))
-        res.headers['Access-Control-Allow-Origin'] = '*'
-        return res
+    # 4. ÚLTIMO RECURSO (VIDSRC)
+    if tmdb_id:
+        return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
     
-    if tmdb_id: return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
-    return "404", 404
-
-@app.route("/atualizar")
-def atualizar():
-    carregar_acervo_pessoal(); carregar_m3u()
-    return jsonify({"status": "atualizado"})
-
-@app.route("/")
-def index():
-    return f"🚀 Sniper PRO Multi-Tracker | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
+    return "Não encontrado", 404
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
