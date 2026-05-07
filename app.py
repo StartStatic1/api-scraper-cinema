@@ -1,11 +1,9 @@
 import os
 import re
-import time
-import json
 import requests
 import urllib.parse
 import unicodedata
-from rapidfuzz import fuzz
+import time  # O famoso pulo do gato
 from flask import Flask, request, redirect, jsonify, make_response
 
 app = Flask(__name__)
@@ -15,131 +13,173 @@ LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u",
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
-# AJUSTADO: Nome que aparece no link do seu perfil no Archive
-UPLOADER_USER = "cinemega" 
-ALLDEBRID_API = "HGt5I30bMYFLdhzDKZ06"
-TMDB_API_KEY = "c90fb79a2f7d756a49bee848bce5f413"
+UPLOADER_USER = "rafaela_andrea_ferrada_flores"
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+# 💎 SUA CHAVE PREMIUM ATIVADA
+ALLDEBRID_API = "HGt5I30bMYFLdhzDKZ06"
 
 catalogo_pessoal = {}
 catalogo_filmes = {}
 
 def limpar_texto(texto):
-    if not texto: return ""
-    texto = unicodedata.normalize("NFKD", str(texto)).encode("ASCII", "ignore").decode("utf-8").lower()
-    texto = re.sub(r'\[.*?\]|\(.*?\)', ' ', texto)
-    lixo = ["dublado", "dual", "1080p", "720p", "4k", "bluray", "webdl", "torrent", "completo"]
-    for l in lixo: texto = texto.replace(l, " ")
-    return re.sub(r'\s+', ' ', re.sub(r'[^a-zA-Z0-9\s]', ' ', texto)).strip()
+    t = unicodedata.normalize('NFKD', str(texto)).encode('ASCII', 'ignore').decode('utf-8')
+    t = re.sub(r'\[.*?\]|\(.*?\)', '', t)
+    t = re.sub(r'(?i)(1080p|720p|4k|fhd|hd|dual|dublado|legendado|completo|filmes|filme)', '', t)
+    t = re.sub(r'[^a-zA-Z0-9\s]', '', t)
+    return " ".join(t.split()).lower().strip()
 
-def carregar_dados():
-    global catalogo_pessoal, catalogo_filmes
+def carregar_acervo_pessoal():
+    global catalogo_pessoal
+    catalogo_pessoal = {}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # Busca no seu canal CineMega do Archive
-        url = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
-        r = requests.get(url, timeout=30).json()
-        docs = r.get('response', {}).get('docs', [])
-        catalogo_pessoal = {limpar_texto(doc.get('title', doc['identifier'])): doc['identifier'] for doc in docs if 'identifier' in doc}
-        print(f"✅ Archive carregado: {len(catalogo_pessoal)} filmes para o uploader {UPLOADER_USER}")
-    except: print("❌ Erro Archive")
-    
+        url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
+        r = requests.get(url_ia, headers=headers, timeout=20).json()
+        items = r.get('response', {}).get('docs', [])
+        for doc in items:
+            id_ia = doc.get('identifier')
+            titulo = doc.get('title', id_ia)
+            if id_ia:
+                catalogo_pessoal[limpar_texto(titulo)] = id_ia
+        print(f"✅ Acervo Pessoal: {len(catalogo_pessoal)} títulos")
+    except: print("❌ Erro Archive.org")
+
+def carregar_m3u():
+    global catalogo_filmes
+    catalogo_filmes = {} 
     for url in LISTAS_M3U:
         try:
-            r = requests.get(url, timeout=30).text
-            nome = None
-            for linha in r.splitlines():
-                if linha.startswith("#EXTINF"): nome = limpar_texto(linha.split(",")[-1])
-                elif linha.startswith("http") and nome:
-                    if nome not in catalogo_filmes: catalogo_filmes[nome] = []
-                    catalogo_filmes[nome].append(linha)
-                    nome = None
+            r = requests.get(url, stream=True, timeout=60)
+            ultimo_nome = None 
+            for linha in r.iter_lines():
+                if not linha: continue
+                l = linha.decode('utf-8', errors='ignore').strip()
+                if l.startswith("#EXTINF"):
+                    ultimo_nome = limpar_texto(l.split(",")[-1])
+                elif l.startswith("http") and ultimo_nome:
+                    if ultimo_nome not in catalogo_filmes:
+                        catalogo_filmes[ultimo_nome] = []
+                    catalogo_filmes[ultimo_nome].append(l)
+                    ultimo_nome = None
+            print(f"✅ Lista OK: {url}")
         except: pass
 
-carregar_dados()
+# Carga inicial
+carregar_acervo_pessoal()
+carregar_m3u()
 
-def buscar_archive(titulo):
-    melhor_t = None; melhor_score = 0
-    for t in catalogo_pessoal:
-        score = fuzz.ratio(titulo, t)
-        if score > melhor_score: melhor_score = score; melhor_t = t
-    
-    # Se a semelhança for maior que 65%, a gente confia e abre
-    if melhor_score < 65: return None
-    
-    ident = catalogo_pessoal[melhor_t]
+def obter_link_direto_ia(identifier):
     try:
-        meta = requests.get(f"https://archive.org/metadata/{ident}").json()
-        arquivos = meta.get('files', [])
-        
-        # PRIORIDADE TOTAL NO MP4 (STREAMING)
+        r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
+        arquivos = r.get("files", [])
         for f in arquivos:
-            nome_f = f['name']
-            if nome_f.lower().endswith('.mp4'):
-                return f"https://archive.org/download/{ident}/{urllib.parse.quote(nome_f)}"
-        
-        # Se não tiver MP4, tenta o MKV como segunda opção
+            nome = f.get("name", "").lower()
+            fmt = f.get("format", "").lower()
+            if nome.endswith('.mp4') and ("h.264" in fmt or "mpeg4" in fmt or "h264" in fmt):
+                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
         for f in arquivos:
-            if f['name'].lower().endswith('.mkv'):
-                return f"https://archive.org/download/{ident}/{urllib.parse.quote(f['name'])}"
+            if f.get("name", "").lower().endswith('.mp4'):
+                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
     except: pass
     return None
 
-def buscar_debrid(titulo, tmdb_id=""):
+def testar_link(url):
     try:
-        termos = [titulo]
-        if tmdb_id:
-            tm = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key={TMDB_API_KEY}").json()
-            if tm.get("imdb_id"): termos.insert(0, tm["imdb_id"])
-            if tm.get("original_title"): termos.append(tm["original_title"])
+        headers = {'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16'}
+        r = requests.get(url, headers=headers, stream=True, timeout=3)
+        status = r.status_code
+        r.close()
+        return status in [200, 206, 301, 302]
+    except: return False
+
+def buscar_alldebrid_pro(titulo):
+    """Busca o Torrent e converte em Link VIP pelo AllDebrid"""
+    try:
+        url_yts = f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1"
+        r_yts = requests.get(url_yts, timeout=5).json()
+        if not r_yts.get("data", {}).get("movies"): return None
         
-        for t in termos:
-            inst = requests.get(f"https://api.alldebrid.com/v4/magnets/instant?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(t)}").json()
-            if inst.get("status") == "success" and inst["data"]["magnets"][0]["instant"]:
-                mag = f"magnet:?xt=urn:btih:{inst['data']['magnets'][0]['hash']}"
-                up = requests.get(f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}").json()
-                if up.get("status") == "success":
-                    m_id = up["data"]["magnets"][0]["id"]
-                    time.sleep(3)
-                    st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
-                    links = st["data"]["magnets"][str(m_id)]["links"]
-                    if links:
-                        un = requests.get(f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}").json()
-                        return un["data"]["link"]
-    except: pass
-    return None
+        magnet = f"magnet:?xt=urn:btih:{r_yts['data']['movies'][0]['torrents'][0]['hash']}"
+        
+        # Upload para AllDebrid
+        url_up = f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(magnet)}"
+        r_up = requests.get(url_up, timeout=5).json()
+        
+        if r_up.get("status") != "success": return None
+        m_id = r_up["data"]["magnets"][0]["id"]
+        
+        # O PULO DO GATO 🐈 (Tempo para o AllDebrid processar o Torrent)
+        time.sleep(2)
+        
+        # Pega link gerado
+        url_st = f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}"
+        r_st = requests.get(url_st, timeout=5).json()
+        
+        links = r_st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
+        if not links: return None
+        
+        # Desbloqueia o link premium
+        url_un = f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}"
+        r_un = requests.get(url_un, timeout=5).json()
+        
+        if r_un.get("status") == "success":
+            return r_un["data"]["link"]
+        return None
+    except Exception as e: 
+        print(f"Erro AllDebrid: {e}")
+        return None
 
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
     tmdb_id = request.args.get("id", "")
-    if not titulo: return "Vazio", 400
-    t_limpo = limpar_texto(titulo)
+    if not titulo: return "Título vazio", 400
+    
+    t_busca = limpar_texto(titulo)
+    link = None
+    
+    # 🥇 1. SEU ACERVO (IA) - PRIORIDADE ABSOLUTA
+    if t_busca in catalogo_pessoal:
+        link = obter_link_direto_ia(catalogo_pessoal[t_busca])
+    if not link:
+        for n_ia, i_ia in catalogo_pessoal.items():
+            if t_busca in n_ia:
+                link = obter_link_direto_ia(i_ia)
+                if link: break
 
-    # 1. ACERVO DO MESTRE (Prioridade 1 - Sem propaganda)
-    link = buscar_archive(t_limpo)
-    if link: return redirect(link)
+    # 🥈 2. ALLDEBRID (MODO PRO) - FILMES NOVOS/MUNDIAIS
+    if not link:
+        link = buscar_alldebrid_pro(t_busca)
 
-    # 2. ALLDEBRID (Prioridade 2)
-    link = buscar_debrid(t_limpo, tmdb_id)
-    if link: return redirect(link)
+    # 🥉 3. FAILOVER M3U (PLANO DE FUNDO)
+    if not link and t_busca in catalogo_filmes:
+        for l in catalogo_filmes[t_busca]:
+            if testar_link(l):
+                link = l
+                break
+        if not link: link = catalogo_filmes[t_busca][0]
 
-    # 3. M3U (Prioridade 3)
-    for t in catalogo_filmes:
-        if fuzz.ratio(t_limpo, t) > 85: return redirect(catalogo_filmes[t][0])
+    # SE ACHOU ALGO (IA, DEBRID OU M3U), REDIRECIONA DIRETO PRO PLAYER!
+    if link:
+        res = make_response(redirect(link))
+        res.headers['Access-Control-Allow-Origin'] = '*'
+        return res
+    
+    # SE TUDO FALHAR, USA O VIDSRC CORRETAMENTE (APENAS COM NÚMERO DE ID)
+    if tmdb_id and tmdb_id.isdigit():
+        return redirect(f"https://vidsrc.net/embed/movie?tmdb={tmdb_id}")
+    else:
+        return "Filme não encontrado no motor. Tente outro.", 404
 
-    # 4. ÚLTIMO CASO (VIDSRC)
-    if tmdb_id: return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
-    return "Não encontrado", 404
+@app.route("/atualizar")
+def atualizar():
+    carregar_acervo_pessoal(); carregar_m3u()
+    return jsonify({"status": "sucesso", "ia": len(catalogo_pessoal), "m3u": len(catalogo_filmes)})
 
 @app.route("/")
-def home():
-    return jsonify({"archive": len(catalogo_pessoal), "m3u": len(catalogo_filmes), "user": UPLOADER_USER})
-
-@app.route("/reload")
-def reload():
-    carregar_dados()
-    return "Banco de Dados Atualizado!"
+def index():
+    return f"🚀 Sniper PRO Ativo | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+
