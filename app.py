@@ -167,7 +167,7 @@ def buscar():
     
     # SE TUDO FALHAR, USA O VIDSRC CORRETAMENTE (APENAS COM NÚMERO DE ID)
     if tmdb_id and tmdb_id.isdigit():
-        return redirect(f"https://vidsrc.net/embed/movie?tmdb={tmdb_id}")
+        return redirect(f"https://m.ok.ru/video/movie?tmdb={tmdb_id}")
     else:
         return "Filme não encontrado no motor. Tente outro.", 404
 
