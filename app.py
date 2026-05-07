@@ -44,7 +44,7 @@ def carregar_acervo_pessoal():
 
 def carregar_m3u():
     global catalogo_filmes
-    catalogo_filmes = {} # Agora guarda Fome Animal -> [link1, link2]
+    catalogo_filmes = {} # Guarda Fome Animal -> [link1, link2]
     for url in LISTAS_M3U:
         try:
             r = requests.get(url, stream=True, timeout=60)
@@ -66,29 +66,36 @@ def carregar_m3u():
 carregar_acervo_pessoal()
 carregar_m3u()
 
+# ====== AJUSTE NO ARCHIVE: MAIS FLEXÍVEL PARA PEGAR O MP4 ======
 def obter_link_direto_ia(identifier):
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
         arquivos = r.get("files", [])
-        # PRIORIDADE: H.264 (Para rodar direto no player sem baixar)
-        for arquivo in arquivos:
-            nome = arquivo.get("name", "")
+        
+        mp4_files = [f for f in arquivos if f.get("name", "").lower().endswith('.mp4')]
+        if not mp4_files: return None
+        
+        # Tenta achar a tag de streaming
+        for arquivo in mp4_files:
             formato = arquivo.get("format", "").lower()
-            if nome.lower().endswith('.mp4') and ("h.264" in formato or "mpeg4" in formato):
-                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(nome)}"
-        # SEGURANÇA: Qualquer MP4
-        for arquivo in arquivos:
-            nome = arquivo.get("name", "")
-            if nome.lower().endswith('.mp4'):
-                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(nome)}"
+            if "h.264" in formato or "h264" in formato or "mpeg4" in formato:
+                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(arquivo['name'])}"
+                
+        # Se não tiver tag, pega o primeiro MP4 que achar (garante que Fome Animal funcione)
+        return f"https://archive.org/download/{identifier}/{urllib.parse.quote(mp4_files[0]['name'])}"
     except: pass
     return None
 
+# ====== AJUSTE NO FAILOVER: DISFARCE DE VLC PLAYER ======
 def testar_link(url):
-    """Verifica se o link está online e não retornou Erro 403"""
+    """Finge ser um player para o servidor IPTV não bloquear o teste"""
     try:
-        h = requests.head(url, timeout=2, allow_redirects=True)
-        return h.status_code == 200
+        headers = {'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16'}
+        # Usa GET com stream=True para ler só o cabeçalho e não baixar o filme
+        r = requests.get(url, headers=headers, stream=True, timeout=3)
+        status = r.status_code
+        r.close() # Fecha a conexão antes de travar
+        return status in [200, 206, 301, 302] # Aceita redirecionamentos e sucesso
     except: return False
 
 @app.route("/buscar")
@@ -102,16 +109,28 @@ def buscar():
     if titulo_busca in catalogo_pessoal:
         link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
     
-    # 2. FAILOVER M3U (Testa as listas até achar uma que não dê 403)
+    # 2. BUSCA NO SEU ARCHIVE (CONTÉM)
+    if not link:
+        for nome_ia in catalogo_pessoal:
+            if titulo_busca in nome_ia or nome_ia in titulo_busca:
+                link = obter_link_direto_ia(catalogo_pessoal[nome_ia])
+                if link: break
+
+    # 3. BYPASS SNIPER (Archive Direto sem Lista)
+    if not link:
+        id_tentativa = titulo_busca.replace(" ", "-")
+        link = obter_link_direto_ia(id_tentativa)
+
+    # 4. FAILOVER M3U (Testa as listas reais com disfarce)
     if not link and titulo_busca in catalogo_filmes:
         links_m3u = catalogo_filmes[titulo_busca]
         for l in links_m3u:
             if testar_link(l):
                 link = l
                 break
-        if not link: link = links_m3u[0] # Se todos falharem, entrega o primeiro
+        if not link: link = links_m3u[0] # Se todos derem 403, joga a bomba pro player
 
-    # 3. BUSCA APROXIMADA M3U
+    # 5. BUSCA APROXIMADA M3U
     if not link and len(titulo_busca) > 4:
         for nome_cat in catalogo_filmes:
             if titulo_busca in nome_cat:
@@ -128,12 +147,11 @@ def buscar():
         return response
     return jsonify({"status": "erro", "procurado": titulo_busca}), 404
 
-# ====== TESTE MODO PRO (POR ID TMDB) ======
+# Rota PRO (Sem listas M3U)
 @app.route("/embed")
 def embed():
     tmdb_id = request.args.get("id", "")
     if not tmdb_id: return "ID faltando", 400
-    # Redireciona para um agregador global estável (SuperEmbed)
     return redirect(f"https://vidsrc.me/embed/movie?tmdb={tmdb_id}")
 
 @app.route("/atualizar")
