@@ -1,5 +1,3 @@
-CMO VC DEU ERRO AI PER8GNTEI E COLEI EM OUTRO CHAT VERIFICA SE ESTÁ CERTO
-
 import os
 import re
 import requests
