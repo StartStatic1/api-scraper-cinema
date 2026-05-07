@@ -31,25 +31,20 @@ def carregar_acervo_pessoal():
     catalogo_pessoal = {}
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # Busca por uploader ou creator para garantir que pegue tudo
         url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
-        
         r = requests.get(url_ia, headers=headers, timeout=20).json()
         items = r.get('response', {}).get('docs', [])
-        
         for doc in items:
             id_ia = doc.get('identifier')
             titulo = doc.get('title', id_ia)
             if id_ia:
-                # Guardamos o título limpo e o ID original
                 catalogo_pessoal[limpar_texto(titulo)] = id_ia
-        print(f"✅ Acervo Pessoal Carregado: {len(catalogo_pessoal)} títulos")
-    except: 
-        print("❌ Erro ao ler Archive.org")
+        print(f"✅ Acervo Pessoal: {len(catalogo_pessoal)} títulos")
+    except: print("❌ Erro Archive.org")
 
 def carregar_m3u():
     global catalogo_filmes
-    catalogo_filmes = {}
+    catalogo_filmes = {} # Agora guarda Fome Animal -> [link1, link2]
     for url in LISTAS_M3U:
         try:
             r = requests.get(url, stream=True, timeout=60)
@@ -61,8 +56,10 @@ def carregar_m3u():
                     ultimo_nome = limpar_texto(l.split(",")[-1])
                 elif l.startswith("http") and ultimo_nome:
                     if ultimo_nome not in catalogo_filmes:
-                        catalogo_filmes[ultimo_nome] = l
+                        catalogo_filmes[ultimo_nome] = []
+                    catalogo_filmes[ultimo_nome].append(l)
                     ultimo_nome = None
+            print(f"✅ Lista OK: {url}")
         except: pass
 
 # Carga inicial
@@ -72,65 +69,81 @@ carregar_m3u()
 def obter_link_direto_ia(identifier):
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
-        for arquivo in r.get("files", []):
-            nome_arq = arquivo.get("name", "")
-            if nome_arq.lower().endswith(('.mp4', '.mkv', '.avi', '.ts')):
-                nome_codificado = urllib.parse.quote(nome_arq)
-                return f"https://archive.org/download/{identifier}/{nome_codificado}"
+        arquivos = r.get("files", [])
+        # PRIORIDADE: H.264 (Para rodar direto no player sem baixar)
+        for arquivo in arquivos:
+            nome = arquivo.get("name", "")
+            formato = arquivo.get("format", "").lower()
+            if nome.lower().endswith('.mp4') and ("h.264" in formato or "mpeg4" in formato):
+                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(nome)}"
+        # SEGURANÇA: Qualquer MP4
+        for arquivo in arquivos:
+            nome = arquivo.get("name", "")
+            if nome.lower().endswith('.mp4'):
+                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(nome)}"
     except: pass
     return None
+
+def testar_link(url):
+    """Verifica se o link está online e não retornou Erro 403"""
+    try:
+        h = requests.head(url, timeout=2, allow_redirects=True)
+        return h.status_code == 200
+    except: return False
 
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
     if not titulo: return "Título vazio", 400
-    
     titulo_busca = limpar_texto(titulo)
     link = None
     
-    # 🔍 1. BUSCA PRIORITÁRIA NO SEU ARCHIVE (EXATA)
+    # 1. ACERVO PESSOAL (Sempre prioridade)
     if titulo_busca in catalogo_pessoal:
         link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
     
-    # 🔍 2. BUSCA NO SEU ARCHIVE (CONTÉM) - Para casos como American Pie 1
-    if not link:
-        for nome_ia in catalogo_pessoal:
-            if titulo_busca in nome_ia or nome_ia in titulo_busca:
-                link = obter_link_direto_ia(catalogo_pessoal[nome_ia])
-                if link: break
-
-    # 🚀 3. BYPASS SNIPER (Tenta o link direto pelo ID se não achou na busca)
-    if not link:
-        id_tentativa = titulo_busca.replace(" ", "-")
-        link = obter_link_direto_ia(id_tentativa)
-
-    # 🔍 4. SE REALMENTE NÃO TIVER NO ARCHIVE, VAI PARA M3U (EXATA)
+    # 2. FAILOVER M3U (Testa as listas até achar uma que não dê 403)
     if not link and titulo_busca in catalogo_filmes:
-        link = catalogo_filmes[titulo_busca]
-        
-    # 🔍 5. ÚLTIMA CHANCE NA M3U (APROXIMADA - COM TRAVA ANTI-BUG 'MA')
+        links_m3u = catalogo_filmes[titulo_busca]
+        for l in links_m3u:
+            if testar_link(l):
+                link = l
+                break
+        if not link: link = links_m3u[0] # Se todos falharem, entrega o primeiro
+
+    # 3. BUSCA APROXIMADA M3U
     if not link and len(titulo_busca) > 4:
         for nome_cat in catalogo_filmes:
-            if titulo_busca in nome_cat: # Título real deve conter a busca
-                link = catalogo_filmes[nome_cat]
-                break
+            if titulo_busca in nome_cat:
+                links_m3u = catalogo_filmes[nome_cat]
+                for l in links_m3u:
+                    if testar_link(l):
+                        link = l
+                        break
+                if link: break
 
     if link:
         response = make_response(redirect(link))
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
-        
     return jsonify({"status": "erro", "procurado": titulo_busca}), 404
+
+# ====== TESTE MODO PRO (POR ID TMDB) ======
+@app.route("/embed")
+def embed():
+    tmdb_id = request.args.get("id", "")
+    if not tmdb_id: return "ID faltando", 400
+    # Redireciona para um agregador global estável (SuperEmbed)
+    return redirect(f"https://vidsrc.me/embed/movie?tmdb={tmdb_id}")
 
 @app.route("/atualizar")
 def atualizar():
-    carregar_acervo_pessoal()
-    carregar_m3u()
-    return jsonify({"status": "atualizado", "ia": len(catalogo_pessoal), "m3u": len(catalogo_filmes)})
+    carregar_acervo_pessoal(); carregar_m3u()
+    return jsonify({"status": "sucesso", "ia": len(catalogo_pessoal), "m3u": len(catalogo_filmes)})
 
 @app.route("/")
 def index():
-    return f"Sniper Ativo | Seu Acervo: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
+    return f"🚀 Sniper PRO | Acervo IA: {len(catalogo_pessoal)} | Filmes M3U: {len(catalogo_filmes)}"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
