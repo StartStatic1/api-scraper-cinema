@@ -2,9 +2,7 @@ import os
 import re
 import time
 import json
-import queue
 import requests
-import threading
 import urllib.parse
 import unicodedata
 from rapidfuzz import fuzz
@@ -17,13 +15,12 @@ LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u",
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
-UPLOADER_USER = "rafaela_andrea_ferrada_flores"
+UPLOADER_USER = "cinemega"  # AJUSTADO PELO PRINT
 ALLDEBRID_API = "HGt5I30bMYFLdhzDKZ06"
 TMDB_API_KEY = "c90fb79a2f7d756a49bee848bce5f413"
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
-# Bancos de dados em memória
 catalogo_pessoal = {}
 catalogo_filmes = {}
 
@@ -37,13 +34,14 @@ def limpar_texto(texto):
 
 def carregar_dados():
     global catalogo_pessoal, catalogo_filmes
-    # Carregar Archive
+    # Carregar Archive - Foco no Uploader Cinemega
     try:
         url = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_USER})&fl[]=identifier,title&output=json&rows=1000"
         r = requests.get(url, timeout=30).json()
-        catalogo_pessoal = {limpar_texto(doc['title']): doc['identifier'] for doc in r['response']['docs'] if 'identifier' in doc}
-        print(f"✅ Archive carregado: {len(catalogo_pessoal)}")
-    except: print("❌ Erro ao carregar Archive")
+        docs = r.get('response', {}).get('docs', [])
+        catalogo_pessoal = {limpar_texto(doc.get('title', doc['identifier'])): doc['identifier'] for doc in docs if 'identifier' in doc}
+        print(f"✅ Archive carregado: {len(catalogo_pessoal)} filmes")
+    except: print("❌ Erro Archive")
     
     # Carregar M3U
     for url in LISTAS_M3U:
@@ -56,10 +54,36 @@ def carregar_dados():
                     if nome not in catalogo_filmes: catalogo_filmes[nome] = []
                     catalogo_filmes[nome].append(linha)
                     nome = None
-            print("✅ M3U carregada")
-        except: print("❌ Erro M3U")
+        except: pass
 
 carregar_dados()
+
+def buscar_archive(titulo):
+    melhor_t = None; melhor_score = 0
+    for t in catalogo_pessoal:
+        score = fuzz.ratio(titulo, t)
+        if score > melhor_score: melhor_score = score; melhor_t = t
+    
+    if melhor_score < 70: return None
+    
+    ident = catalogo_pessoal[melhor_t]
+    try:
+        meta = requests.get(f"https://archive.org/metadata/{ident}").json()
+        arquivos = meta.get('files', [])
+        
+        # 🎯 O PULO DO GATO: Priorizar MP4 para rodar online (Streaming)
+        # Se houver MKV e MP4, ele pega o MP4 para não fazer download direto.
+        link_mkv = None
+        for f in arquivos:
+            nome_f = f['name']
+            if nome_f.lower().endswith('.mp4'):
+                return f"https://archive.org/download/{ident}/{urllib.parse.quote(nome_f)}"
+            if nome_f.lower().endswith('.mkv'):
+                link_mkv = f"https://archive.org/download/{ident}/{urllib.parse.quote(nome_f)}"
+        
+        return link_mkv # Se só tiver MKV, vai ele mesmo.
+    except: pass
+    return None
 
 def buscar_debrid(titulo, tmdb_id=""):
     try:
@@ -85,23 +109,6 @@ def buscar_debrid(titulo, tmdb_id=""):
     except: pass
     return None
 
-def buscar_archive(titulo):
-    # Fuzzy Match com nota 70 para achar "Fome Animal" mesmo com extras no nome
-    melhor_t = None; melhor_score = 0
-    for t in catalogo_pessoal:
-        score = fuzz.ratio(titulo, t)
-        if score > melhor_score: melhor_score = score; melhor_t = t
-    if melhor_score < 70: return None
-    
-    ident = catalogo_pessoal[melhor_t]
-    try:
-        meta = requests.get(f"https://archive.org/metadata/{ident}").json()
-        for f in meta['files']:
-            if f['name'].lower().endswith(('.mp4', '.mkv', '.avi')):
-                return f"https://archive.org/download/{ident}/{urllib.parse.quote(f['name'])}"
-    except: pass
-    return None
-
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
@@ -109,26 +116,30 @@ def buscar():
     if not titulo: return "Vazio", 400
     t_limpo = limpar_texto(titulo)
 
-    # 1. TENTA ARCHIVE PRIMEIRO (PRIORIDADE MESTRE)
+    # 1. PRIORIDADE ARCHIVE (STREAMING MP4)
     link = buscar_archive(t_limpo)
     if link: return redirect(link)
 
-    # 2. TENTA DEBRID
+    # 2. ALLDEBRID
     link = buscar_debrid(t_limpo, tmdb_id)
     if link: return redirect(link)
 
-    # 3. TENTA M3U
+    # 3. M3U FAILOVER
     for t in catalogo_filmes:
-        if fuzz.ratio(t_limpo, t) > 80:
-            return redirect(catalogo_filmes[t][0])
+        if fuzz.ratio(t_limpo, t) > 85: return redirect(catalogo_filmes[t][0])
 
-    # 4. FALLBACK FINAL (EMBED LIMPO)
+    # 4. FALLBACK EMBED
     if tmdb_id: return redirect(f"https://embed.su/embed/movie/{tmdb_id}")
-    return "Não encontrado", 404
+    return "404", 404
 
 @app.route("/")
 def home():
-    return jsonify({"archive": len(catalogo_pessoal), "m3u": len(catalogo_filmes), "status": "online"})
+    return jsonify({"archive": len(catalogo_pessoal), "m3u": len(catalogo_filmes), "uploader": UPLOADER_USER})
+
+@app.route("/reload")
+def reload():
+    carregar_dados()
+    return "Atualizado!"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
