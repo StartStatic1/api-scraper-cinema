@@ -7,14 +7,15 @@ from flask import Flask, request, redirect, jsonify, make_response
 
 app = Flask(__name__)
 
-# MESTRE: Suas listas integradas
+# ====== CONFIGURAÇÕES DO MESTRE ======
 LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP5/serv_zerohop.m3u",
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
-
-# Nome de Usuário Público do seu Archive.org
 UPLOADER_USER = "rafaela_andrea_ferrada_flores"
+
+# 💎 SUA CHAVE PREMIUM ATIVADA
+ALLDEBRID_API = "HGt5I30bMYFLdhzDKZ06"
 
 catalogo_pessoal = {}
 catalogo_filmes = {}
@@ -70,32 +71,52 @@ def obter_link_direto_ia(identifier):
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
         arquivos = r.get("files", [])
-        
-        # PRIORIDADE: Formato que roda direto no player (H.264 / MP4)
+        # Prioriza MP4 com compressão de vídeo (H.264/MPEG4) para rodar direto
         for f in arquivos:
             nome = f.get("name", "").lower()
-            formato = f.get("format", "").lower()
-            if nome.endswith('.mp4') and ("h.264" in formato or "h264" in formato or "mpeg4" in formato):
+            fmt = f.get("format", "").lower()
+            if nome.endswith('.mp4') and ("h.264" in fmt or "mpeg4" in fmt or "h264" in fmt):
                 return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
-        
-        # SEGUNDA OPÇÃO: Qualquer MP4
+        # Backup: qualquer MP4
         for f in arquivos:
-            nome = f.get("name", "").lower()
-            if nome.endswith('.mp4'):
+            if f.get("name", "").lower().endswith('.mp4'):
                 return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
     except: pass
     return None
 
 def testar_link(url):
-    """Simula o player VLC para testar se o link M3U retorna 403 (lotado)"""
     try:
         headers = {'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16'}
-        # Faz um GET parcial (apenas cabeçalho) para não consumir banda
         r = requests.get(url, headers=headers, stream=True, timeout=3)
         status = r.status_code
         r.close()
         return status in [200, 206, 301, 302]
     except: return False
+
+def buscar_alldebrid_pro(titulo):
+    """Busca o Torrent e converte em Link VIP pelo AllDebrid"""
+    try:
+        # Busca Torrent (YTS como fonte estável)
+        url_yts = f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1"
+        r_yts = requests.get(url_yts, timeout=5).json()
+        if not r_yts.get("data", {}).get("movies"): return None
+        
+        magnet = f"magnet:?xt=urn:btih:{r_yts['data']['movies'][0]['torrents'][0]['hash']}"
+        
+        # Upload para AllDebrid
+        url_up = f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(magnet)}"
+        r_up = requests.get(url_up, timeout=5).json()
+        m_id = r_up["data"]["magnets"][0]["id"]
+        
+        # Pega link e desbloqueia
+        url_st = f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}"
+        r_st = requests.get(url_st, timeout=5).json()
+        links = r_st["data"]["magnets"].get(str(m_id), {}).get("links", [])
+        if not links: return None
+        
+        url_un = f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}"
+        return requests.get(url_un, timeout=5).json()["data"]["link"]
+    except: return None
 
 @app.route("/buscar")
 def buscar():
@@ -103,49 +124,36 @@ def buscar():
     tmdb_id = request.args.get("id", "")
     if not titulo: return "Título vazio", 400
     
-    titulo_busca = limpar_texto(titulo)
+    t_busca = limpar_texto(titulo)
     link = None
     
-    # 🔍 1. TENTA NO SEU ACERVO (IA) - PRIORIDADE 1
-    if titulo_busca in catalogo_pessoal:
-        link = obter_link_direto_ia(catalogo_pessoal[titulo_busca])
-    
-    # 🔍 2. BUSCA NO SEU ACERVO (CONTÉM) - Para títulos longos no Archive
+    # 🥇 1. SEU ACERVO (IA) - PRIORIDADE ABSOLUTA
+    if t_busca in catalogo_pessoal:
+        link = obter_link_direto_ia(catalogo_pessoal[t_busca])
     if not link:
-        for nome_ia, id_ia in catalogo_pessoal.items():
-            if titulo_busca in nome_ia:
-                link = obter_link_direto_ia(id_ia)
+        for n_ia, i_ia in catalogo_pessoal.items():
+            if t_busca in n_ia:
+                link = obter_link_direto_ia(i_ia)
                 if link: break
 
-    # 🔍 3. FAILOVER M3U (Pula links 403/Lotados)
-    if not link and titulo_busca in catalogo_filmes:
-        links_m3u = catalogo_filmes[titulo_busca]
-        for l in links_m3u:
+    # 🥈 2. ALLDEBRID (MODO PRO) - FILMES NOVOS/CATÁLOGO MUNDIAL
+    if not link:
+        link = buscar_alldebrid_pro(t_busca)
+
+    # 🥉 3. FAILOVER M3U (PLANO DE FUNDO)
+    if not link and t_busca in catalogo_filmes:
+        for l in catalogo_filmes[t_busca]:
             if testar_link(l):
                 link = l
                 break
-        if not link: link = links_m3u[0] # Se todos derem 403, joga o primeiro
-
-    # 🔍 4. BUSCA APROXIMADA NA M3U
-    if not link and len(titulo_busca) > 4:
-        for nome_cat, links in catalogo_filmes.items():
-            if titulo_busca in nome_cat:
-                for l in links:
-                    if testar_link(l):
-                        link = l
-                        break
-                if link: break
-
-    # 🚀 5. MODO PRO (EMBED GLOBAL) - SE TUDO ACIMA FALHAR
-    if not link:
-        # Se falhou tudo, redireciona para um servidor que não tem limite de conexão
-        return redirect(f"https://vidsrc.me/embed/movie?tmdb={tmdb_id if tmdb_id else titulo_busca}")
+        if not link: link = catalogo_filmes[t_busca][0]
 
     if link:
-        response = make_response(redirect(link))
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
-    return jsonify({"status": "erro", "procurado": titulo_busca}), 404
+        res = make_response(redirect(link))
+        res.headers['Access-Control-Allow-Origin'] = '*'
+        return res
+    
+    return redirect(f"https://vidsrc.me/embed/movie?tmdb={tmdb_id if tmdb_id else t_busca}")
 
 @app.route("/atualizar")
 def atualizar():
@@ -154,7 +162,7 @@ def atualizar():
 
 @app.route("/")
 def index():
-    return f"🚀 Sniper Online | Acervo IA: {len(catalogo_pessoal)} | Filmes M3U: {len(catalogo_filmes)}"
+    return f"🚀 Sniper PRO Ativo | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
