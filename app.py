@@ -85,21 +85,18 @@ def buscar_alldebrid_pro(titulo, id_tmdb=""):
     try:
         termos = [titulo]
         if id_tmdb:
-            # Puxa o ID do IMDB para busca infalível
             tm = requests.get(f"https://api.themoviedb.org/3/movie/{id_tmdb}?api_key={TMDB_API_KEY}").json()
             if tm.get("original_title"): termos.append(tm["original_title"])
-            if tm.get("imdb_id"): termos.append(tm["imdb_id"])
+            if tm.get("imdb_id"): termos.insert(0, tm["imdb_id"]) # ID IMDB vira a PRIMEIRA opção
 
         for t in termos:
-            # Busca torrent
             yts = requests.get(f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(t)}&limit=1").json()
             if yts.get("data", {}).get("movies"):
                 mag = f"magnet:?xt=urn:btih:{yts['data']['movies'][0]['torrents'][0]['hash']}"
-                # Sobe pro AllDebrid
                 up = requests.get(f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}").json()
                 if up.get("status") == "success":
                     m_id = up["data"]["magnets"][0]["id"]
-                    time.sleep(3.5) # Tempo para processar filme antigo
+                    time.sleep(4) # Espera estratégica de 4 segundos
                     st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
                     links = st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
                     if links:
@@ -117,31 +114,36 @@ def buscar():
     t_busca = limpar_texto(titulo)
     link = None
     
-    # 1. ACERVO IA
-    if t_busca in catalogo_pessoal: link = obter_link_direto_ia(catalogo_pessoal[t_busca])
+    # 1. ACERVO PESSOAL (IA)
+    if t_busca in catalogo_pessoal:
+        link = obter_link_direto_ia(catalogo_pessoal[t_busca])
     
-    # 2. ALLDEBRID (AGORA COMO PRIORIDADE ANTES DA M3U)
-    if not link: link = buscar_alldebrid_pro(t_busca, tmdb_id)
+    # 2. ALLDEBRID (FORÇA BRUTA)
+    if not link:
+        link = buscar_alldebrid_pro(t_busca, tmdb_id)
 
-    # 3. M3U FAILOVER
+    # 3. LISTAS M3U
     if not link and t_busca in catalogo_filmes:
         for l in catalogo_filmes[t_busca]:
             if testar_link(l): link = l; break
-        if not link: link = catalogo_filmes[t_busca][0]
+        if not link and catalogo_filmes[t_busca]: link = catalogo_filmes[t_busca][0]
 
+    # SE ACHOU (IA OU DEBRID), REDIRECIONA PARA O LINK LIMPO
     if link:
         res = make_response(redirect(link))
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
     
-    # 4. ÚLTIMA OPÇÃO (O PLAYER RUIM COM PROPAGANDA)
-    if tmdb_id: return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
-    return "404", 404
+    # 4. ÚLTIMO RECURSO (VIDSRC COM PROPAGANDA)
+    if tmdb_id:
+        return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
+    
+    return "Filme não encontrado", 404
 
 @app.route("/atualizar")
 def atualizar():
     carregar_acervo_pessoal(); carregar_m3u()
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "atualizado"})
 
 @app.route("/")
 def index():
