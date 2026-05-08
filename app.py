@@ -17,7 +17,7 @@ LISTAS_M3U = [
 UPLOADER_EMAIL = "rafflores17@gmail.com"
 ALLDEBRID_API = "hGt5I30bMYFLdhzDKZ06" 
 
-# link RAW corrigido do seu repositório para leitura do servidor
+# link RAW do seu repositório
 URL_BANCO_DE_CHAVES = "https://raw.githubusercontent.com/StartStatic1/cine-mega-mobile/main/chaves_vip.txt"
 
 catalogo_pessoal = {}
@@ -120,36 +120,36 @@ def buscar_alldebrid_vip(titulo, tmdb_id=None):
     return None
 
 # ==========================================
-# 🔐 VALIDAÇÃO VIP EXTERNA (GITHUB RAW)
+# 🔐 VALIDAÇÃO VIP (COM QUEBRA DE CACHE NO SERVIDOR)
 # ==========================================
 @app.route("/validar")
 def validar_chave():
     chave_recebida = request.args.get("key", "").strip()
     
-    # 1. CHAVE MESTRA: Sempre liberada
+    # Chave Mestra
     if chave_recebida == "MESTRE-2026":
-        res = make_response(jsonify({"status": "sucesso"}))
-        res.headers['Access-Control-Allow-Origin'] = '*'
-        return res
+        return jsonify({"status": "sucesso"}), 200, {'Access-Control-Allow-Origin': '*'}
 
-    # 2. CONSULTA AO TXT NO GITHUB
     try:
-        req = requests.get(URL_BANCO_DE_CHAVES, timeout=10)
+        # Forçamos o GitHub a ignorar o cache usando um parâmetro de tempo (?t=...)
+        # E enviamos headers de controle para garantir a leitura real
+        headers = {'Cache-Control': 'no-cache', 'Pragma': 'no-cache'}
+        url_fresca = f"{URL_BANCO_DE_CHAVES}?t={int(time.time())}"
+        
+        req = requests.get(url_fresca, headers=headers, timeout=10)
         chaves_ativas = [linha.strip() for linha in req.text.split('\n') if linha.strip()]
         
         if chave_recebida in chaves_ativas:
-            res = make_response(jsonify({"status": "sucesso"}))
+            return jsonify({"status": "sucesso"}), 200, {'Access-Control-Allow-Origin': '*'}
         else:
-            res = make_response(jsonify({"status": "erro"}))
+            return jsonify({"status": "erro"}), 200, {'Access-Control-Allow-Origin': '*'}
             
     except Exception:
-        res = make_response(jsonify({"status": "erro"}))
-        
-    res.headers['Access-Control-Allow-Origin'] = '*'
-    return res
+        # Se houver erro de rede com o GitHub, retorna erro por segurança
+        return jsonify({"status": "erro"}), 200, {'Access-Control-Allow-Origin': '*'}
 
 # ==========================================
-# ROTA INICIAL - PAINEL DE STATUS
+# ROTA INICIAL
 # ==========================================
 @app.route("/")
 def home():
@@ -169,14 +169,8 @@ def home():
     </head>
     <body>
         <h1>MOTOR CINE MEGA PRO - ONLINE</h1>
-        <div class="card">
-            🎬 Acervo Archive.org
-            <span class="num">{len(catalogo_pessoal)}</span>
-        </div>
-        <div class="card">
-            📺 Acervo M3U (Zerohop)
-            <span class="num">{len(catalogo_filmes)}</span>
-        </div>
+        <div class="card">🎬 Acervo Archive <span class="num">{len(catalogo_pessoal)}</span></div>
+        <div class="card">📺 Acervo M3U <span class="num">{len(catalogo_filmes)}</span></div>
         <br><br><p style="color:#666; font-size:12px;">Desenvolvido por: @StartStatic</p>
     </body>
     </html>
@@ -184,68 +178,29 @@ def home():
     return html
 
 # ==========================================
-# ROTA DE BUSCA - O MOTOR PRINCIPAL
+# ROTA DE BUSCA E AVISO
 # ==========================================
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
     tmdb_id = request.args.get("id", "")
     tipo = request.args.get("tipo", "filme")
-    
     if not titulo: return "Vazio", 400
-    
     t_busca = limpar_texto(titulo)
-    
     if t_busca in catalogo_pessoal:
         link = obter_link_archive(catalogo_pessoal[t_busca])
         if link: return redirect(link)
-
     link_vip = buscar_alldebrid_vip(t_busca, tmdb_id)
-    if link_vip:
-        res = make_response(redirect(link_vip))
-        res.headers['Access-Control-Allow-Origin'] = '*'
-        return res
-
-    if t_busca in catalogo_filmes:
-        return redirect(catalogo_filmes[t_busca][0])
-    
+    if link_vip: return redirect(link_vip, code=302, Response=make_response().headers.add('Access-Control-Allow-Origin', '*'))
+    if t_busca in catalogo_filmes: return redirect(catalogo_filmes[t_busca][0])
     if tmdb_id:
         prefixo = "serie" if tipo == "serie" else "filme"
         return redirect(f"https://myembed.biz/{prefixo}/{tmdb_id}")
-    
     return redirect("/aguarde")
 
-# ==========================================
-# ROTA DE AVISO
-# ==========================================
 @app.route("/aguarde")
 def aguarde():
-    html = """
-    <!DOCTYPE html>
-    <html lang="pt-BR">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Cine Mega - Processando</title>
-        <style>
-            body { background: #000; color: #fff; text-align: center; font-family: 'Segoe UI', sans-serif; padding-top: 100px; margin: 0; }
-            .loader { border: 6px solid #111; border-top: 6px solid #e50914; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 20px auto; }
-            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-            h1 { color: #e50914; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; }
-            p { color: #aaa; font-size: 16px; padding: 0 20px; }
-            .brand { color: #ffcc00; font-weight: bold; margin-top: 50px; display: block; }
-        </style>
-    </head>
-    <body>
-        <div class="loader"></div>
-        <h1>Acervo em Atualização</h1>
-        <p>Mestre, este título está sendo processado para o nosso acervo VIP.</p>
-        <p>Tente outro filme enquanto preparamos este para você!</p>
-        <span class="brand">CINE MEGA OFICIAL</span>
-    </body>
-    </html>
-    """
-    return html
+    return """<body style="background:#000;color:#fff;text-align:center;padding-top:100px;"><h1>Processando...</h1><p>CINE MEGA OFICIAL</p></body>"""
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
