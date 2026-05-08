@@ -59,6 +59,7 @@ def carregar_m3u():
                     ultimo_nome = None
         except: pass
 
+# Inicia o carregamento ao ligar o servidor
 carregar_acervo_pessoal()
 carregar_m3u()
 
@@ -116,6 +117,44 @@ def buscar_alldebrid_vip(titulo, tmdb_id=None):
         except: continue
     return None
 
+# ==========================================
+# ROTA INICIAL - PAINEL DE STATUS
+# ==========================================
+@app.route("/")
+def home():
+    html = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Status - Motor Cine Mega</title>
+        <style>
+            body {{ background: #050505; color: #fff; font-family: sans-serif; text-align: center; padding-top: 50px; }}
+            h1 {{ color: #e50914; }}
+            .card {{ background: #111; border: 1px solid #333; border-radius: 10px; padding: 20px; display: inline-block; margin: 10px; min-width: 250px; }}
+            .num {{ font-size: 30px; font-weight: bold; color: #ffcc00; display: block; margin-top: 10px; }}
+        </style>
+    </head>
+    <body>
+        <h1>MOTOR CINE MEGA PRO - ONLINE</h1>
+        <div class="card">
+            🎬 Acervo Archive.org
+            <span class="num">{len(catalogo_pessoal)}</span>
+        </div>
+        <div class="card">
+            📺 Acervo M3U (Zerohop)
+            <span class="num">{len(catalogo_filmes)}</span>
+        </div>
+        <br><br><p style="color:#666; font-size:12px;">Desenvolvido por: @StartStatic</p>
+    </body>
+    </html>
+    """
+    return html
+
+# ==========================================
+# ROTA DE BUSCA - O MOTOR PRINCIPAL
+# ==========================================
 @app.route("/buscar")
 def buscar():
     titulo = request.args.get("titulo", "")
@@ -151,7 +190,9 @@ def buscar():
     
     return redirect("/aguarde")
 
+# ==========================================
 # ROTA DE AVISO
+# ==========================================
 @app.route("/aguarde")
 def aguarde():
     html = """
