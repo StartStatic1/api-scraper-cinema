@@ -15,7 +15,8 @@ LISTAS_M3U = [
 ]
 
 UPLOADER_EMAIL = "rafflores17@gmail.com"
-ALLDEBRID_API = "HGt5I30bMYFLdhzDKZ06"
+# CHAVE CORRIGIDA: h minúsculo para autenticação real 💎
+ALLDEBRID_API = "hGt5I30bMYFLdhzDKZ06" 
 
 catalogo_pessoal = {}
 catalogo_filmes = {}
@@ -31,19 +32,16 @@ def limpar_texto(texto):
 def carregar_acervo_pessoal():
     global catalogo_pessoal
     catalogo_pessoal = {}
-    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_EMAIL})&fl[]=identifier,title&output=json&rows=1000"
-        r = requests.get(url_ia, headers=headers, timeout=20).json()
-        items = r.get('response', {}).get('docs', [])
-        for doc in items:
+        r = requests.get(url_ia, timeout=20).json()
+        for doc in r.get('response', {}).get('docs', []):
             id_ia = doc.get('identifier')
-            titulo_xml = doc.get('title', id_ia)
             if id_ia:
-                catalogo_pessoal[limpar_texto(titulo_xml)] = id_ia
+                catalogo_pessoal[limpar_texto(doc.get('title', id_ia))] = id_ia
                 catalogo_pessoal[limpar_texto(id_ia)] = id_ia
-        print(f"✅ Acervo Pessoal OK")
-    except: print("❌ Erro Archive.org")
+        print("✅ Acervo Archive Sincronizado")
+    except: print("❌ Falha Archive")
 
 def carregar_m3u():
     global catalogo_filmes
@@ -61,68 +59,57 @@ def carregar_m3u():
                     if ultimo_nome not in catalogo_filmes: catalogo_filmes[ultimo_nome] = []
                     catalogo_filmes[ultimo_nome].append(l)
                     ultimo_nome = None
-            print(f"✅ Lista M3U OK")
+            print(f"✅ Listas M3U prontas")
         except: pass
 
 carregar_acervo_pessoal()
 carregar_m3u()
 
-def obter_link_direto_ia(identifier):
-    try:
-        r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
-        arquivos = r.get("files", [])
-        for f in arquivos:
-            nome = f.get("name", "").lower()
-            fmt = f.get("format", "").lower()
-            if nome.endswith('.mp4') and ("h.264" in fmt or "h264" in fmt):
-                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
-        for f in arquivos:
-            nome = f.get("name", "").lower()
-            if nome.endswith(('.mp4', '.mkv')):
-                return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
-    except: pass
-    return None
-
-def buscar_alldebrid_max(titulo, tmdb_id=None):
-    """Busca em múltiplas fontes de torrent para o AllDebrid não falhar"""
+def buscar_alldebrid_vip(titulo, tmdb_id=None):
+    """Tenta Torrentio (IMDB) e YTS. Aguarda o link ficar pronto."""
     magnets = []
     
-    # 1. Torrentio (Fonte mais forte para filmes mundiais)
+    # 1. TORRENTIO (O melhor para AllDebrid)
     if tmdb_id:
         try:
             tm = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key=c90fb79a2f7d756a49bee848bce5f413").json()
             imdb_id = tm.get("imdb_id")
             if imdb_id:
-                r_tor = requests.get(f"https://torrentio.strem.fun/stream/movie/{imdb_id}.json", timeout=5).json()
+                r_tor = requests.get(f"https://torrentio.strem.fun/stream/movie/{imdb_id}.json", timeout=10).json()
                 for s in r_tor.get("streams", []):
                     if "infoHash" in s:
                         magnets.append(f"magnet:?xt=urn:btih:{s['infoHash']}")
                         break
         except: pass
 
-    # 2. YTS (Backup para clássicos/comédias)
+    # 2. YTS
     if not magnets:
         try:
-            url_yts = f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1"
-            r_yts = requests.get(url_yts, timeout=5).json()
+            r_yts = requests.get(f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1", timeout=5).json()
             if r_yts.get("data", {}).get("movies"):
                 magnets.append(f"magnet:?xt=urn:btih:{r_yts['data']['movies'][0]['torrents'][0]['hash']}")
         except: pass
 
     for mag in magnets:
         try:
-            # Upload
-            url_up = f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}"
-            r_up = requests.get(url_up, timeout=5).json()
-            if r_up.get("status") == "success":
-                m_id = r_up["data"]["magnets"][0]["id"]
-                time.sleep(2.5) # Tempo de processamento
-                r_st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
-                links = r_st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
-                if links:
-                    r_un = requests.get(f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}").json()
-                    if r_un.get("status") == "success":
-                        return r_un["data"]["link"]
+            # Upload do Magnet
+            up = requests.get(f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}").json()
+            if up.get("status") == "success":
+                m_id = up["data"]["magnets"][0]["id"]
+                
+                # Loop de verificação (espera até 6 segundos)
+                for _ in range(6):
+                    time.sleep(1)
+                    st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
+                    m_data = st.get("data", {}).get("magnets", {}).get(str(m_id), {})
+                    
+                    if m_data.get("statusCode") == 4: # Status 4 = Pronto
+                        links = m_data.get("links", [])
+                        if links:
+                            un = requests.get(f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}").json()
+                            if un.get("status") == "success":
+                                return un["data"]["link"]
+                    elif m_data.get("statusCode") > 4: break # Erro no Torrent
         except: continue
     return None
 
@@ -130,48 +117,34 @@ def buscar_alldebrid_max(titulo, tmdb_id=None):
 def buscar():
     titulo = request.args.get("titulo", "")
     tmdb_id = request.args.get("id", "")
-    if not titulo: return "Título vazio", 400
+    if not titulo: return "Vazio", 400
     
     t_busca = limpar_texto(titulo)
-    link = None
     
-    # 🥇 PRIORIDADE 1: SEU ACERVO (Archive.org)
+    # 🥇 1. ARCHIVE (SEU ACERVO)
     if t_busca in catalogo_pessoal:
-        link = obter_link_direto_ia(catalogo_pessoal[t_busca])
-    
-    if not link:
-        for n_ia, i_ia in catalogo_pessoal.items():
-            if t_busca in n_ia or n_ia in t_busca:
-                link = obter_link_direto_ia(i_ia)
-                if link: break
+        id_ia = catalogo_pessoal[t_busca]
+        r = requests.get(f"https://archive.org/metadata/{id_ia}").json()
+        for f in r.get("files", []):
+            if f.get("name", "").lower().endswith(('.mp4', '.mkv')):
+                return redirect(f"https://archive.org/download/{id_ia}/{urllib.parse.quote(f.get('name'))}")
 
-    # 🥈 PRIORIDADE 2: ALLDEBRID MAX (Forçando o Torrentio)
-    # Isso evita cair no Zerohop com erro 403
-    if not link:
-        link = buscar_alldebrid_max(t_busca, tmdb_id)
-
-    # 🥉 PRIORIDADE 3: M3U (Último recurso)
-    if not link and t_busca in catalogo_filmes:
-        link = catalogo_filmes[t_busca][0]
-
-    if link:
-        res = make_response(redirect(link))
+    # 🥈 2. ALLDEBRID VIP (FORÇADO)
+    # Com a chave corrigida (h minúsculo), ele vai destravar o torrent agora.
+    link_vip = buscar_alldebrid_vip(t_busca, tmdb_id)
+    if link_vip:
+        res = make_response(redirect(link_vip))
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
+
+    # 🥉 3. ZEROHOP (M3U)
+    if t_busca in catalogo_filmes:
+        return redirect(catalogo_filmes[t_busca][0])
     
-    # 🎬 FALLBACK FINAL (Ok.ru)
     if tmdb_id:
-        return redirect(f"https://m.ok.ru/video/movie?tmdb={tmdb_id}")
-    return "Não encontrado.", 404
-
-@app.route("/atualizar")
-def atualizar():
-    carregar_acervo_pessoal(); carregar_m3u()
-    return jsonify({"status": "sucesso", "ia": len(catalogo_pessoal), "m3u": len(catalogo_filmes)})
-
-@app.route("/")
-def index():
-    return f"🚀 Cine Mega VIP | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
+        return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
+    
+    return "Não encontrado", 404
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    app.run(host="0.0.0.0", port=8000)
