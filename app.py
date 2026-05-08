@@ -17,6 +17,9 @@ LISTAS_M3U = [
 UPLOADER_EMAIL = "rafflores17@gmail.com"
 ALLDEBRID_API = "hGt5I30bMYFLdhzDKZ06" 
 
+# link RAW corrigido do seu repositório para leitura do servidor
+URL_BANCO_DE_CHAVES = "https://raw.githubusercontent.com/StartStatic1/cine-mega-mobile/main/chaves_vip.txt"
+
 catalogo_pessoal = {}
 catalogo_filmes = {}
 
@@ -59,7 +62,6 @@ def carregar_m3u():
                     ultimo_nome = None
         except: pass
 
-# Inicia o carregamento ao ligar o servidor
 carregar_acervo_pessoal()
 carregar_m3u()
 
@@ -118,28 +120,31 @@ def buscar_alldebrid_vip(titulo, tmdb_id=None):
     return None
 
 # ==========================================
-# 🔐 BANCO DE CHAVES VIP (GERENCIE AQUI)
+# 🔐 VALIDAÇÃO VIP EXTERNA (GITHUB RAW)
 # ==========================================
-# Adicione as chaves dos seus clientes aqui.
-# Para remover o acesso de alguém, basta apagar a chave da lista.
-CHAVES_PERMITIDAS = [
-    "MESTRE-2026",
-    "VIP-MENSAL-123",
-    "TESTE-APP"
-]
-
 @app.route("/validar")
 def validar_chave():
     chave_recebida = request.args.get("key", "").strip()
     
-    if chave_recebida in CHAVES_PERMITIDAS:
-        # Se a chave estiver na lista acima, libera o app
+    # 1. CHAVE MESTRA: Sempre liberada
+    if chave_recebida == "MESTRE-2026":
         res = make_response(jsonify({"status": "sucesso"}))
-    else:
-        # Se não estiver, bloqueia o app
+        res.headers['Access-Control-Allow-Origin'] = '*'
+        return res
+
+    # 2. CONSULTA AO TXT NO GITHUB
+    try:
+        req = requests.get(URL_BANCO_DE_CHAVES, timeout=10)
+        chaves_ativas = [linha.strip() for linha in req.text.split('\n') if linha.strip()]
+        
+        if chave_recebida in chaves_ativas:
+            res = make_response(jsonify({"status": "sucesso"}))
+        else:
+            res = make_response(jsonify({"status": "erro"}))
+            
+    except Exception:
         res = make_response(jsonify({"status": "erro"}))
         
-    # Headers para o App não ser bloqueado pelo navegador
     res.headers['Access-Control-Allow-Origin'] = '*'
     return res
 
@@ -185,32 +190,26 @@ def home():
 def buscar():
     titulo = request.args.get("titulo", "")
     tmdb_id = request.args.get("id", "")
-    tipo = request.args.get("tipo", "filme") # Pega se é filme ou serie do index
+    tipo = request.args.get("tipo", "filme")
     
     if not titulo: return "Vazio", 400
     
     t_busca = limpar_texto(titulo)
     
-    # 1. ARCHIVE (SEU)
     if t_busca in catalogo_pessoal:
         link = obter_link_archive(catalogo_pessoal[t_busca])
         if link: return redirect(link)
 
-    # 2. ALLDEBRID (FORÇADO)
     link_vip = buscar_alldebrid_vip(t_busca, tmdb_id)
     if link_vip:
         res = make_response(redirect(link_vip))
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
 
-    # 3. M3U (ZEROHOP)
     if t_busca in catalogo_filmes:
         return redirect(catalogo_filmes[t_busca][0])
     
-    # 🥇 FALLBACK FINAL: PLAYER MYEMBED (PLANO C)
-    # Se não tem no seu servidor, tenta o player interno antes de desistir
     if tmdb_id:
-        # Ajusta a URL caso seja série ou filme para o MyEmbed
         prefixo = "serie" if tipo == "serie" else "filme"
         return redirect(f"https://myembed.biz/{prefixo}/{tmdb_id}")
     
