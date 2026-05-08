@@ -15,7 +15,7 @@ LISTAS_M3U = [
 ]
 
 UPLOADER_EMAIL = "rafflores17@gmail.com"
-ALLDEBRID_API = "hGt5I30bMYFLdhzDKZ06" # Chave corrigida com 'h' minúsculo
+ALLDEBRID_API = "hGt5I30bMYFLdhzDKZ06" 
 
 catalogo_pessoal = {}
 catalogo_filmes = {}
@@ -63,16 +63,13 @@ carregar_acervo_pessoal()
 carregar_m3u()
 
 def obter_link_archive(identifier):
-    """Busca o arquivo MP4 derivado para evitar download do MKV pesado"""
     try:
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
         arquivos = r.get("files", [])
-        # PRIORIDADE 1: MP4 (Sempre abre no player)
         for f in arquivos:
             nome = f.get("name", "")
             if nome.lower().endswith('.mp4'):
                 return f"https://archive.org/download/{identifier}/{urllib.parse.quote(nome)}"
-        # PRIORIDADE 2: O próprio MKV se não tiver MP4
         for f in arquivos:
             nome = f.get("name", "")
             if nome.lower().endswith('.mkv'):
@@ -123,6 +120,8 @@ def buscar_alldebrid_vip(titulo, tmdb_id=None):
 def buscar():
     titulo = request.args.get("titulo", "")
     tmdb_id = request.args.get("id", "")
+    tipo = request.args.get("tipo", "filme") # Pega se é filme ou serie do index
+    
     if not titulo: return "Vazio", 400
     
     t_busca = limpar_texto(titulo)
@@ -139,17 +138,20 @@ def buscar():
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
 
-    # 3. M3U (ZEROHOP) - ÚLTIMA OPÇÃO
+    # 3. M3U (ZEROHOP)
     if t_busca in catalogo_filmes:
         return redirect(catalogo_filmes[t_busca][0])
     
-    # 🥇 SUBSTITUIÇÃO: EM VEZ DE OK.RU, MANDAMOS PARA NOSSA PÁGINA
+    # 🥇 FALLBACK FINAL: PLAYER MYEMBED (PLANO C)
+    # Se não tem no seu servidor, tenta o player interno antes de desistir
     if tmdb_id:
-        return redirect("/aguarde")
+        # Ajusta a URL caso seja série ou filme para o MyEmbed
+        prefixo = "serie" if tipo == "serie" else "filme"
+        return redirect(f"https://myembed.biz/{prefixo}/{tmdb_id}")
     
-    return "Não encontrado", 404
+    return redirect("/aguarde")
 
-# NOVA ROTA: TELA DE AVISO PERSONALIZADA
+# ROTA DE AVISO
 @app.route("/aguarde")
 def aguarde():
     html = """
@@ -158,7 +160,7 @@ def aguarde():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Cine Mega - Atualizando Acervo</title>
+        <title>Cine Mega - Processando</title>
         <style>
             body { background: #000; color: #fff; text-align: center; font-family: 'Segoe UI', sans-serif; padding-top: 100px; margin: 0; }
             .loader { border: 6px solid #111; border-top: 6px solid #e50914; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 20px auto; }
@@ -171,8 +173,8 @@ def aguarde():
     <body>
         <div class="loader"></div>
         <h1>Acervo em Atualização</h1>
-        <p>Mestre, este título está sendo processado e em breve estará disponível em nosso acervo VIP.</p>
-        <p>Aguarde o processamento do Archive ou tente outro filme!</p>
+        <p>Mestre, este título está sendo processado para o nosso acervo VIP.</p>
+        <p>Tente outro filme enquanto preparamos este para você!</p>
         <span class="brand">CINE MEGA OFICIAL</span>
     </body>
     </html>
