@@ -118,6 +118,32 @@ def buscar_alldebrid_vip(titulo, tmdb_id=None):
     return None
 
 # ==========================================
+# 🔐 BANCO DE CHAVES VIP (GERENCIE AQUI)
+# ==========================================
+# Adicione as chaves dos seus clientes aqui.
+# Para remover o acesso de alguém, basta apagar a chave da lista.
+CHAVES_PERMITIDAS = [
+    "MESTRE-2026",
+    "VIP-MENSAL-123",
+    "TESTE-APP"
+]
+
+@app.route("/validar")
+def validar_chave():
+    chave_recebida = request.args.get("key", "").strip()
+    
+    if chave_recebida in CHAVES_PERMITIDAS:
+        # Se a chave estiver na lista acima, libera o app
+        res = make_response(jsonify({"status": "sucesso"}))
+    else:
+        # Se não estiver, bloqueia o app
+        res = make_response(jsonify({"status": "erro"}))
+        
+    # Headers para o App não ser bloqueado pelo navegador
+    res.headers['Access-Control-Allow-Origin'] = '*'
+    return res
+
+# ==========================================
 # ROTA INICIAL - PAINEL DE STATUS
 # ==========================================
 @app.route("/")
