@@ -83,22 +83,13 @@ def obter_link_direto_ia(identifier):
     except: pass
     return None
 
-def buscar_alldebrid_reforcado(titulo, tmdb_id=None):
-    """Tenta YTS e depois Torrentio (Stremio) para garantir o play"""
+def buscar_alldebrid_max(titulo, tmdb_id=None):
+    """Busca em múltiplas fontes de torrent para o AllDebrid não falhar"""
     magnets = []
     
-    # Fonte 1: YTS
-    try:
-        url_yts = f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1"
-        r_yts = requests.get(url_yts, timeout=5).json()
-        if r_yts.get("data", {}).get("movies"):
-            magnets.append(f"magnet:?xt=urn:btih:{r_yts['data']['movies'][0]['torrents'][0]['hash']}")
-    except: pass
-
-    # Fonte 2: Torrentio (Se tiver o ID do TMDB, a chance de erro é zero)
-    if not magnets and tmdb_id:
+    # 1. Torrentio (Fonte mais forte para filmes mundiais)
+    if tmdb_id:
         try:
-            # Busca ID do IMDB via TMDB
             tm = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key=c90fb79a2f7d756a49bee848bce5f413").json()
             imdb_id = tm.get("imdb_id")
             if imdb_id:
@@ -109,14 +100,23 @@ def buscar_alldebrid_reforcado(titulo, tmdb_id=None):
                         break
         except: pass
 
+    # 2. YTS (Backup para clássicos/comédias)
+    if not magnets:
+        try:
+            url_yts = f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1"
+            r_yts = requests.get(url_yts, timeout=5).json()
+            if r_yts.get("data", {}).get("movies"):
+                magnets.append(f"magnet:?xt=urn:btih:{r_yts['data']['movies'][0]['torrents'][0]['hash']}")
+        except: pass
+
     for mag in magnets:
         try:
-            # Manda pro AllDebrid
+            # Upload
             url_up = f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}"
             r_up = requests.get(url_up, timeout=5).json()
             if r_up.get("status") == "success":
                 m_id = r_up["data"]["magnets"][0]["id"]
-                time.sleep(2.5) # Aguarda processamento
+                time.sleep(2.5) # Tempo de processamento
                 r_st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
                 links = r_st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
                 if links:
@@ -135,7 +135,7 @@ def buscar():
     t_busca = limpar_texto(titulo)
     link = None
     
-    # 1. SEU ACERVO (Archive.org)
+    # 🥇 PRIORIDADE 1: SEU ACERVO (Archive.org)
     if t_busca in catalogo_pessoal:
         link = obter_link_direto_ia(catalogo_pessoal[t_busca])
     
@@ -145,11 +145,12 @@ def buscar():
                 link = obter_link_direto_ia(i_ia)
                 if link: break
 
-    # 2. ALLDEBRID REFORÇADO (Tenta YTS + Torrentio)
+    # 🥈 PRIORIDADE 2: ALLDEBRID MAX (Forçando o Torrentio)
+    # Isso evita cair no Zerohop com erro 403
     if not link:
-        link = buscar_alldebrid_reforcado(t_busca, tmdb_id)
+        link = buscar_alldebrid_max(t_busca, tmdb_id)
 
-    # 3. FAILOVER M3U (Última opção para evitar Max Connection do Zerohop)
+    # 🥉 PRIORIDADE 3: M3U (Último recurso)
     if not link and t_busca in catalogo_filmes:
         link = catalogo_filmes[t_busca][0]
 
@@ -158,8 +159,9 @@ def buscar():
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
     
+    # 🎬 FALLBACK FINAL (Ok.ru)
     if tmdb_id:
-        return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
+        return redirect(f"https://m.ok.ru/video/movie?tmdb={tmdb_id}")
     return "Não encontrado.", 404
 
 @app.route("/atualizar")
@@ -169,7 +171,7 @@ def atualizar():
 
 @app.route("/")
 def index():
-    return f"🚀 Cine Mega PRO | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
+    return f"🚀 Cine Mega VIP | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
