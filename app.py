@@ -106,7 +106,6 @@ def buscar_alldebrid_vip(titulo, tmdb_id=None):
             up = requests.get(f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}").json()
             if up.get("status") == "success":
                 m_id = up["data"]["magnets"][0].get("id")
-                # ESPERA REAL: 5 segundos para o AllDebrid processar
                 for _ in range(5):
                     time.sleep(1)
                     st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
@@ -144,10 +143,41 @@ def buscar():
     if t_busca in catalogo_filmes:
         return redirect(catalogo_filmes[t_busca][0])
     
+    # 🥇 SUBSTITUIÇÃO: EM VEZ DE OK.RU, MANDAMOS PARA NOSSA PÁGINA
     if tmdb_id:
-        return redirect(f"https://m.ok.ru/video/movie?tmdb={tmdb_id}")
+        return redirect("/aguarde")
     
     return "Não encontrado", 404
+
+# NOVA ROTA: TELA DE AVISO PERSONALIZADA
+@app.route("/aguarde")
+def aguarde():
+    html = """
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Cine Mega - Atualizando Acervo</title>
+        <style>
+            body { background: #000; color: #fff; text-align: center; font-family: 'Segoe UI', sans-serif; padding-top: 100px; margin: 0; }
+            .loader { border: 6px solid #111; border-top: 6px solid #e50914; border-radius: 50%; width: 50px; height: 50px; animation: spin 1s linear infinite; margin: 20px auto; }
+            @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+            h1 { color: #e50914; font-size: 24px; text-transform: uppercase; letter-spacing: 2px; }
+            p { color: #aaa; font-size: 16px; padding: 0 20px; }
+            .brand { color: #ffcc00; font-weight: bold; margin-top: 50px; display: block; }
+        </style>
+    </head>
+    <body>
+        <div class="loader"></div>
+        <h1>Acervo em Atualização</h1>
+        <p>Mestre, este título está sendo processado e em breve estará disponível em nosso acervo VIP.</p>
+        <p>Aguarde o processamento do Archive ou tente outro filme!</p>
+        <span class="brand">CINE MEGA OFICIAL</span>
+    </body>
+    </html>
+    """
+    return html
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
