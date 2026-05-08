@@ -14,10 +14,7 @@ LISTAS_M3U = [
     "https://github.com/StartStatic1/meus-apks/releases/download/V_BACKUP6/lista_serv_dns.cdnxjp.m3u"
 ]
 
-# 🔑 O SEGREDO: Usamos o seu e-mail de uploader que apareceu no XML
 UPLOADER_EMAIL = "rafflores17@gmail.com"
-
-# 💎 SUA CHAVE PREMIUM ATIVADA
 ALLDEBRID_API = "HGt5I30bMYFLdhzDKZ06"
 
 catalogo_pessoal = {}
@@ -36,24 +33,17 @@ def carregar_acervo_pessoal():
     catalogo_pessoal = {}
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
-        # BUSCA PELO E-MAIL: Garante que pegue TUDO que é seu, independente do título
         url_ia = f"https://archive.org/advancedsearch.php?q=uploader:({UPLOADER_EMAIL})&fl[]=identifier,title&output=json&rows=1000"
         r = requests.get(url_ia, headers=headers, timeout=20).json()
         items = r.get('response', {}).get('docs', [])
-        
         for doc in items:
             id_ia = doc.get('identifier')
             titulo_xml = doc.get('title', id_ia)
-            
             if id_ia:
-                # O PULO DO GATO: Registra o título (Braindead) E o ID (fome-animal)
-                # Assim, se você buscar qualquer um dos dois, o motor acha!
                 catalogo_pessoal[limpar_texto(titulo_xml)] = id_ia
                 catalogo_pessoal[limpar_texto(id_ia)] = id_ia
-                
-        print(f"✅ Acervo Pessoal: {len(catalogo_pessoal)} títulos carregados (via {UPLOADER_EMAIL})")
-    except: 
-        print("❌ Erro Archive.org - Verifique a conexão")
+        print(f"✅ Acervo Pessoal OK")
+    except: print("❌ Erro Archive.org")
 
 def carregar_m3u():
     global catalogo_filmes
@@ -68,31 +58,24 @@ def carregar_m3u():
                 if l.startswith("#EXTINF"):
                     ultimo_nome = limpar_texto(l.split(",")[-1])
                 elif l.startswith("http") and ultimo_nome:
-                    if ultimo_nome not in catalogo_filmes:
-                        catalogo_filmes[ultimo_nome] = []
+                    if ultimo_nome not in catalogo_filmes: catalogo_filmes[ultimo_nome] = []
                     catalogo_filmes[ultimo_nome].append(l)
                     ultimo_nome = None
-            print(f"✅ Lista OK: {url}")
+            print(f"✅ Lista M3U OK")
         except: pass
 
-# Carga inicial
 carregar_acervo_pessoal()
 carregar_m3u()
 
 def obter_link_direto_ia(identifier):
     try:
-        # Pega os metadados do item específico
         r = requests.get(f"https://archive.org/metadata/{identifier}", timeout=10).json()
         arquivos = r.get("files", [])
-        
-        # 1ª OPÇÃO: Busca o MP4 (H.264) que o Archive gera para streaming (melhor para celular)
         for f in arquivos:
             nome = f.get("name", "").lower()
             fmt = f.get("format", "").lower()
             if nome.endswith('.mp4') and ("h.264" in fmt or "h264" in fmt):
                 return f"https://archive.org/download/{identifier}/{urllib.parse.quote(f.get('name'))}"
-        
-        # 2ª OPÇÃO: Qualquer MP4 ou MKV se o primeiro falhar
         for f in arquivos:
             nome = f.get("name", "").lower()
             if nome.endswith(('.mp4', '.mkv')):
@@ -100,41 +83,48 @@ def obter_link_direto_ia(identifier):
     except: pass
     return None
 
-def testar_link(url):
-    try:
-        headers = {'User-Agent': 'VLC/3.0.16 LibVLC/3.0.16'}
-        r = requests.get(url, headers=headers, stream=True, timeout=3)
-        status = r.status_code
-        r.close()
-        return status in [200, 206, 301, 302]
-    except: return False
-
-def buscar_alldebrid_pro(titulo):
+def buscar_alldebrid_reforcado(titulo, tmdb_id=None):
+    """Tenta YTS e depois Torrentio (Stremio) para garantir o play"""
+    magnets = []
+    
+    # Fonte 1: YTS
     try:
         url_yts = f"https://yts.mx/api/v2/list_movies.json?query_term={urllib.parse.quote(titulo)}&limit=1"
         r_yts = requests.get(url_yts, timeout=5).json()
-        if not r_yts.get("data", {}).get("movies"): return None
-        
-        magnet = f"magnet:?xt=urn:btih:{r_yts['data']['movies'][0]['torrents'][0]['hash']}"
-        url_up = f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(magnet)}"
-        r_up = requests.get(url_up, timeout=5).json()
-        
-        if r_up.get("status") != "success": return None
-        m_id = r_up["data"]["magnets"][0]["id"]
-        time.sleep(2)
-        
-        url_st = f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}"
-        r_st = requests.get(url_st, timeout=5).json()
-        links = r_st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
-        if not links: return None
-        
-        url_un = f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}"
-        r_un = requests.get(url_un, timeout=5).json()
-        
-        if r_un.get("status") == "success":
-            return r_un["data"]["link"]
-        return None
-    except: return None
+        if r_yts.get("data", {}).get("movies"):
+            magnets.append(f"magnet:?xt=urn:btih:{r_yts['data']['movies'][0]['torrents'][0]['hash']}")
+    except: pass
+
+    # Fonte 2: Torrentio (Se tiver o ID do TMDB, a chance de erro é zero)
+    if not magnets and tmdb_id:
+        try:
+            # Busca ID do IMDB via TMDB
+            tm = requests.get(f"https://api.themoviedb.org/3/movie/{tmdb_id}?api_key=c90fb79a2f7d756a49bee848bce5f413").json()
+            imdb_id = tm.get("imdb_id")
+            if imdb_id:
+                r_tor = requests.get(f"https://torrentio.strem.fun/stream/movie/{imdb_id}.json", timeout=5).json()
+                for s in r_tor.get("streams", []):
+                    if "infoHash" in s:
+                        magnets.append(f"magnet:?xt=urn:btih:{s['infoHash']}")
+                        break
+        except: pass
+
+    for mag in magnets:
+        try:
+            # Manda pro AllDebrid
+            url_up = f"https://api.alldebrid.com/v4/magnet/upload?agent=CineMega&apikey={ALLDEBRID_API}&magnets[]={urllib.parse.quote(mag)}"
+            r_up = requests.get(url_up, timeout=5).json()
+            if r_up.get("status") == "success":
+                m_id = r_up["data"]["magnets"][0]["id"]
+                time.sleep(2.5) # Aguarda processamento
+                r_st = requests.get(f"https://api.alldebrid.com/v4/magnet/status?agent=CineMega&apikey={ALLDEBRID_API}&id={m_id}").json()
+                links = r_st.get("data", {}).get("magnets", {}).get(str(m_id), {}).get("links", [])
+                if links:
+                    r_un = requests.get(f"https://api.alldebrid.com/v4/link/unlock?agent=CineMega&apikey={ALLDEBRID_API}&link={urllib.parse.quote(links[0]['link'])}").json()
+                    if r_un.get("status") == "success":
+                        return r_un["data"]["link"]
+        except: continue
+    return None
 
 @app.route("/buscar")
 def buscar():
@@ -145,39 +135,32 @@ def buscar():
     t_busca = limpar_texto(titulo)
     link = None
     
-    # 🥇 1. SEU ACERVO (IA) - PRIORIDADE ABSOLUTA
+    # 1. SEU ACERVO (Archive.org)
     if t_busca in catalogo_pessoal:
         link = obter_link_direto_ia(catalogo_pessoal[t_busca])
     
-    # Busca parcial se a exata falhar
     if not link:
         for n_ia, i_ia in catalogo_pessoal.items():
             if t_busca in n_ia or n_ia in t_busca:
                 link = obter_link_direto_ia(i_ia)
                 if link: break
 
-    # 🥈 2. ALLDEBRID (MODO PRO)
+    # 2. ALLDEBRID REFORÇADO (Tenta YTS + Torrentio)
     if not link:
-        link = buscar_alldebrid_pro(t_busca)
+        link = buscar_alldebrid_reforcado(t_busca, tmdb_id)
 
-    # 🥉 3. FAILOVER M3U
+    # 3. FAILOVER M3U (Última opção para evitar Max Connection do Zerohop)
     if not link and t_busca in catalogo_filmes:
-        for l in catalogo_filmes[t_busca]:
-            if testar_link(l):
-                link = l
-                break
-        if not link: link = catalogo_filmes[t_busca][0]
+        link = catalogo_filmes[t_busca][0]
 
     if link:
         res = make_response(redirect(link))
         res.headers['Access-Control-Allow-Origin'] = '*'
         return res
     
-    # 🎬 4. FALLBACK FINAL (Ok.ru / Vidsrc)
-    if tmdb_id and tmdb_id.isdigit():
-        return redirect(f"https://m.ok.ru/video/movie?tmdb={tmdb_id}")
-    else:
-        return "Filme não encontrado.", 404
+    if tmdb_id:
+        return redirect(f"https://vidsrc.to/embed/movie/{tmdb_id}")
+    return "Não encontrado.", 404
 
 @app.route("/atualizar")
 def atualizar():
@@ -186,7 +169,7 @@ def atualizar():
 
 @app.route("/")
 def index():
-    return f"🚀 Cine Mega PRO | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)} | Uploader: {UPLOADER_EMAIL}"
+    return f"🚀 Cine Mega PRO | IA: {len(catalogo_pessoal)} | M3U: {len(catalogo_filmes)}"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
