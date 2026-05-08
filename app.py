@@ -202,5 +202,13 @@ def buscar():
 def aguarde():
     return """<body style="background:#000;color:#fff;text-align:center;padding-top:100px;"><h1>Processando...</h1><p>CINE MEGA OFICIAL</p></body>"""
 
+# ==========================================
+# 🤖 BLOQUEIO DE BOTS (ROBOTS.TXT)
+# ==========================================
+@app.route("/robots.txt")
+def robots():
+    txt = "User-agent: MJ12bot\nDisallow: /\n\nUser-agent: *\nDisallow: /buscar\nDisallow: /validar"
+    return make_response(txt, 200, {"Content-Type": "text/plain"})
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8000)
